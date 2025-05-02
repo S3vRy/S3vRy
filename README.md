@@ -19,7 +19,6 @@
 
 * 📧 Email: [s3vroot@gmail.com](mailto:s3vroot@gmail.com)
 * 💬 Telegram: [@S3vRy](https://t.me/S3vRy)
-* 🔗 LinkedIn: [Rytsev Sergey](https://www.linkedin.com/in/rytsev/)
 
 ## Что здесь будет
 
