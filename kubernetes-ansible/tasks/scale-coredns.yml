@@ -1,0 +1,85 @@
+---
+# ============================================================================
+# Scale CoreDNS to 1 pod per node (total 3 pods)
+# ============================================================================
+
+- name: Wait for CoreDNS deployment to be available
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl get deployment coredns -n kube-system --no-headers 2>/dev/null | grep -q coredns && echo "exists" || echo "not-exists"
+  register: coredns_deployment_check
+  changed_when: false
+  failed_when: false
+  retries: 10
+  delay: 5
+
+- name: Get number of Ready nodes
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl get nodes --no-headers | grep -c Ready || echo "0"
+  register: nodes_count
+  changed_when: false
+
+- name: Scale CoreDNS to match number of nodes (1 per node)
+  ansible.builtin.shell: |
+    kubectl scale deployment coredns -n kube-system --replicas={{ nodes_count.stdout | int }}
+  register: coredns_scale
+  changed_when: true
+  when: "'exists' in coredns_deployment_check.stdout and nodes_count.stdout | int > 0"
+
+- name: Patch CoreDNS deployment with podAntiAffinity for one pod per node
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl patch deployment coredns -n kube-system -p '{
+      "spec": {
+        "template": {
+          "spec": {
+            "affinity": {
+              "podAntiAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": [
+                  {
+                    "labelSelector": {
+                      "matchLabels": {
+                        "k8s-app": "kube-dns"
+                      }
+                    },
+                    "topologyKey": "kubernetes.io/hostname"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }'
+  register: coredns_patch
+  changed_when: true
+  when: "'exists' in coredns_deployment_check.stdout"
+
+- name: Wait for all CoreDNS pods to be ready
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl wait --for=condition=ready pod -l k8s-app=kube-dns -n kube-system --timeout=300s
+  register: coredns_ready
+  retries: 30
+  delay: 10
+  failed_when: false
+  changed_when: false
+  when: "'exists' in coredns_deployment_check.stdout"
+
+- name: Verify CoreDNS pods distribution (should be 1 per node)
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "=== CoreDNS Pods Distribution ==="
+    kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide
+    echo ""
+    echo "=== Pods per node (should be 1 per node) ==="
+    kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide --no-headers | awk '{print $7}' | sort | uniq -c
+  register: coredns_distribution
+  changed_when: false
+  when: "'exists' in coredns_deployment_check.stdout"
+
+- name: Display CoreDNS distribution
+  ansible.builtin.debug:
+    msg: "{{ coredns_distribution.stdout_lines }}"
+  when: "'exists' in coredns_deployment_check.stdout and coredns_distribution is defined"

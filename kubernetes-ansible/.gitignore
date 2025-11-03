@@ -1,0 +1,37 @@
+# Ansible
+*.retry
+*.log
+ansible.log
+.ansible/
+inventory.yml
+inventory.yml.backup
+
+# Configuration (contains sensitive data - use cluster-config.yml.example as template)
+cluster-config.yml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+

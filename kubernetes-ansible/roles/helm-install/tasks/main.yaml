@@ -1,0 +1,56 @@
+---
+- name: Check if Helm is already installed
+  ansible.builtin.command: helm version --short
+  register: helm_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Download Helm binary
+  ansible.builtin.get_url:
+    url: "https://get.helm.sh/helm-v{{ helm_version }}-linux-amd64.tar.gz"
+    dest: /tmp/helm-v{{ helm_version }}-linux-amd64.tar.gz
+    mode: '0644'
+  when: helm_version_check.rc != 0 or helm_version not in helm_version_check.stdout
+
+- name: Extract Helm archive
+  ansible.builtin.unarchive:
+    src: /tmp/helm-v{{ helm_version }}-linux-amd64.tar.gz
+    dest: /tmp
+    remote_src: true
+    creates: /tmp/linux-amd64/helm
+  when: helm_version_check.rc != 0 or helm_version not in helm_version_check.stdout
+
+- name: Install Helm binary
+  ansible.builtin.copy:
+    src: /tmp/linux-amd64/helm
+    dest: /usr/local/bin/helm
+    mode: '0755'
+    remote_src: true
+  when: helm_version_check.rc != 0 or helm_version not in helm_version_check.stdout
+  notify: Verify helm
+
+- name: Clean up Helm temporary files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/helm-v{{ helm_version }}-linux-amd64.tar.gz
+    - /tmp/linux-amd64
+  when: helm_version_check.rc != 0 or helm_version not in helm_version_check.stdout
+
+- name: Verify Helm installation
+  ansible.builtin.command: helm version --short
+  register: helm_final_check
+  changed_when: false
+
+- name: Display Helm version
+  ansible.builtin.debug:
+    msg: "Helm version: {{ helm_final_check.stdout }}"
+
+- name: Assert Helm is installed correctly
+  ansible.builtin.assert:
+    that:
+      - helm_final_check.rc == 0
+      - helm_version in helm_final_check.stdout
+    fail_msg: "Helm {{ helm_version }} is not installed correctly"
+    success_msg: "Helm {{ helm_version }} installed successfully"

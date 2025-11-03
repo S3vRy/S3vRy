@@ -1,0 +1,36 @@
+---
+- name: Update apt cache before package installation
+  apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install all required packages
+  apt:
+    name: "{{ k8s_required_packages }}"
+    state: present
+    update_cache: false
+  register: packages_install
+
+- name: Verify all packages are installed
+  command: dpkg -l {{ item }}
+  register: package_check
+  loop: "{{ k8s_required_packages }}"
+  changed_when: false
+  failed_when: false
+
+- name: Assert all packages are installed
+  assert:
+    that:
+      - package_check.results | selectattr('rc', 'equalto', 0) | list | length == k8s_required_packages | length
+    fail_msg: "Not all required packages are installed"
+    success_msg: "All required packages are installed"
+
+- name: Verify ipvsadm version
+  command: ipvsadm --version
+  register: ipvsadm_version
+  changed_when: false
+
+- name: Display ipvsadm version
+  debug:
+    msg: "ipvsadm version: {{ ipvsadm_version.stdout }}"
+

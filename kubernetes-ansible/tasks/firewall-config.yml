@@ -1,0 +1,139 @@
+---
+- name: Check current ufw status
+  command: ufw status
+  register: ufw_current_status
+  changed_when: false
+  failed_when: false
+
+- name: Set ufw default policies
+  shell: |
+    ufw default {{ firewall_default_policy }} incoming
+    ufw default allow outgoing
+    ufw default {{ firewall_default_policy }} routed
+  register: ufw_defaults
+  changed_when: false
+
+- name: Allow outbound DNS (UDP port 53) to any - for external DNS queries
+  shell: ufw allow out 53/udp
+  register: ufw_dns_outbound_udp
+  changed_when: false
+  failed_when: false
+
+- name: Allow outbound DNS (TCP port 53) to any - for external DNS queries
+  shell: ufw allow out 53/tcp
+  register: ufw_dns_outbound_tcp
+  changed_when: false
+  failed_when: false
+
+- name: Allow inbound DNS responses (related, established connections)
+  shell: ufw allow in on any proto udp from any port 53
+  register: ufw_dns_response_udp
+  changed_when: false
+  failed_when: false
+
+- name: Allow inbound DNS responses (related, established connections) TCP
+  shell: ufw allow in on any proto tcp from any port 53
+  register: ufw_dns_response_tcp
+  changed_when: false
+  failed_when: false
+
+- name: Enable ufw logging
+  shell: ufw logging full
+  register: ufw_logging
+  changed_when: false
+
+- name: Allow SSH only from allowed IPs
+  shell: ufw allow from {{ item }} to any port 22 proto tcp
+  loop: "{{ ssh_allowed_ips }}"
+  register: ufw_ssh_rules
+  changed_when: false
+
+- name: Allow all ports for allowed IPs
+  shell: ufw allow from {{ item }}
+  loop: "{{ allowed_ips }}"
+  register: ufw_allowed_ips_rules
+  changed_when: false
+
+- name: Allow public ports (80/tcp, 443/tcp) for all IPs
+  shell: ufw allow {{ item }}
+  loop: "{{ public_ports }}"
+  register: ufw_public_rules
+  changed_when: false
+
+- name: Allow ICMP (ping) from VPN network, VPN server, and Kubernetes networks
+  shell: ufw allow from {{ item }} proto icmp
+  loop: "{{ icmp_allowed_sources }}"
+  register: ufw_icmp_rules
+  changed_when: false
+  failed_when: false
+
+- name: Allow ICMP (ping) from node IPs
+  shell: ufw allow from {{ item }} proto icmp
+  loop: "{{ node_ips }}"
+  register: ufw_icmp_nodes_rules
+  changed_when: false
+  failed_when: false
+
+- name: Allow DNS (UDP port 53) from VPN network, VPN server, and Kubernetes networks
+  shell: ufw allow from {{ item }} to any port 53 proto udp
+  loop: "{{ dns_allowed_sources }}"
+  register: ufw_dns_udp_rules
+  changed_when: false
+  failed_when: false
+
+- name: Allow DNS (UDP port 53) from node IPs
+  shell: ufw allow from {{ item }} to any port 53 proto udp
+  loop: "{{ node_ips }}"
+  register: ufw_dns_udp_nodes_rules
+  changed_when: false
+  failed_when: false
+
+- name: Allow DNS (TCP port 53) from VPN network, VPN server, and Kubernetes networks
+  shell: ufw allow from {{ item }} to any port 53 proto tcp
+  loop: "{{ dns_allowed_sources }}"
+  register: ufw_dns_tcp_rules
+  changed_when: false
+  failed_when: false
+
+- name: Allow DNS (TCP port 53) from node IPs
+  shell: ufw allow from {{ item }} to any port 53 proto tcp
+  loop: "{{ node_ips }}"
+  register: ufw_dns_tcp_nodes_rules
+  changed_when: false
+  failed_when: false
+
+- name: Apply ufw rules
+  command: ufw --force enable
+  register: ufw_enable
+  changed_when: true
+
+- name: Verify ufw is active
+  command: ufw status
+  register: ufw_status
+  changed_when: false
+
+- name: Assert ufw is active
+  assert:
+    that:
+      - "'Status: active' in ufw_status.stdout"
+    fail_msg: "ufw is not active"
+    success_msg: "ufw is active and configured"
+
+- name: Display ufw status
+  debug:
+    msg: "{{ ufw_status.stdout_lines }}"
+
+- name: Verify ufw rules for allowed IPs
+  command: ufw status numbered
+  register: ufw_rules_check
+  changed_when: false
+
+- name: Assert allowed IPs have rules
+  assert:
+    that:
+      - item in ufw_rules_check.stdout
+    fail_msg: "UFW rule for {{ item }} not found"
+    success_msg: "UFW rule for {{ item }} is configured"
+  loop: "{{ allowed_ips }}"
+  failed_when: false
+

@@ -1,0 +1,272 @@
+---
+# ============================================================================
+# Initialize Kubernetes Cluster on First Master Node
+# ============================================================================
+# Performs:
+# - Generate kubeadm configuration
+# - kubeadm init
+# - Configure kubectl
+# - Install kube-vip for HA
+# - Install Cilium CNI
+#
+# Tags: init, bootstrap
+# ============================================================================
+
+- name: Initialize Kubernetes Cluster
+  hosts: k8s_masters[0]
+  become: true
+  gather_facts: true
+  tags:
+    - init
+    - bootstrap
+
+  vars:
+    kubeadm_config_path: "/tmp/kubeadm-config.yaml"
+    kubeconfig_path: "/root/.kube/config"
+
+  tasks:
+    - name: Load required kernel modules for sysctl
+      ansible.builtin.command: modprobe {{ item }}
+      loop:
+        - br_netfilter
+        - nf_conntrack
+      changed_when: false
+      failed_when: false
+
+    - name: Verify kernel modules are loaded
+      ansible.builtin.shell: |
+        set -o pipefail
+        lsmod | grep -E "^{{ item }}\s"
+      loop:
+        - br_netfilter
+        - nf_conntrack
+      register: module_check
+      changed_when: false
+      failed_when: false
+
+    - name: Assert kernel modules are loaded
+      ansible.builtin.assert:
+        that:
+          - module_check.results | selectattr('rc', 'equalto', 0) | list | length == 2
+        fail_msg: "Required kernel modules (br_netfilter, nf_conntrack) are not loaded"
+        success_msg: "All required kernel modules are loaded"
+
+    - name: Apply critical sysctl settings for Kubernetes
+      ansible.builtin.command: sysctl -w {{ item.key }}={{ item.value }}
+      loop: "{{ k8s_sysctl_settings | dict2items }}"
+      register: sysctl_result
+      changed_when: false
+      failed_when: false
+
+    - name: Verify critical sysctl settings are applied
+      ansible.builtin.command: sysctl -n {{ item.key }}
+      loop: "{{ k8s_sysctl_settings | dict2items }}"
+      register: sysctl_verify
+      changed_when: false
+      failed_when: false
+
+    - name: Assert critical sysctl settings match expected values
+      ansible.builtin.assert:
+        that:
+          - item.item.value | string == item.stdout | string
+        fail_msg: |
+          Critical sysctl {{ item.item.key }} mismatch.
+          Expected: {{ item.item.value }}, Got: {{ item.stdout }}
+        success_msg: "Sysctl {{ item.item.key }} = {{ item.stdout }}"
+      loop: "{{ sysctl_verify.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+      when: item.rc == 0
+
+    - name: Create Kubernetes directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /etc/kubernetes
+        - /etc/kubernetes/manifests
+        - /var/log/kubernetes
+        - /root/.kube
+
+    - name: Install kube-vip on first master (BEFORE init)
+      ansible.builtin.include_role:
+        name: kube-vip-setup
+
+    - name: Generate kubeadm configuration
+      ansible.builtin.template:
+        src: roles/kubernetes-install/templates/kubeadm-config.yaml.j2
+        dest: "{{ kubeadm_config_path }}"
+        mode: '0644'
+
+    - name: Create audit policy file
+      ansible.builtin.copy:
+        content: |
+          apiVersion: audit.k8s.io/v1
+          kind: Policy
+          rules:
+            - level: Metadata
+              omitStages:
+                - "RequestReceived"
+        dest: /etc/kubernetes/audit-policy.yaml
+        mode: '0644'
+
+    - name: Create audit log directory
+      ansible.builtin.file:
+        path: /var/log/kubernetes
+        state: directory
+        mode: '0755'
+
+    - name: Wait for audit policy file to be ready
+      ansible.builtin.wait_for:
+        path: /etc/kubernetes/audit-policy.yaml
+        timeout: 10
+
+    - name: Check if admin.conf exists
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: admin_conf_stat
+
+    - name: Check if cluster is already initialized
+      ansible.builtin.shell: |
+        set -o pipefail
+        if [ -f /etc/kubernetes/admin.conf ]; then
+          export KUBECONFIG=/etc/kubernetes/admin.conf
+          kubectl get nodes --no-headers 2>&1 | wc -l
+        else
+          echo "0"
+        fi
+      register: cluster_check
+      changed_when: false
+      failed_when: false
+
+    - name: Initialize Kubernetes cluster
+      ansible.builtin.command: kubeadm init --config={{ kubeadm_config_path }} --upload-certs --ignore-preflight-errors=Swap
+      register: kubeadm_init
+      async: 900
+      poll: 15
+      changed_when: not admin_conf_stat.stat.exists
+      when: not admin_conf_stat.stat.exists
+
+    - name: Wait for kubeadm init to complete
+      ansible.builtin.async_status:
+        jid: "{{ kubeadm_init.ansible_job_id }}"
+      register: init_result
+      until: init_result.finished
+      retries: 60
+      delay: 10
+      changed_when: false
+      failed_when: false
+      when: not admin_conf_stat.stat.exists and kubeadm_init.ansible_job_id is defined
+
+    - name: Check kubeadm init result
+      ansible.builtin.assert:
+        that:
+          - init_result.finished == 1
+          - init_result.failed == false
+        fail_msg: "kubeadm init failed. Result: {{ init_result }}"
+        success_msg: "Kubernetes cluster initialized successfully"
+      when: not admin_conf_stat.stat.exists and init_result is defined
+
+    - name: Check if admin.conf exists (for wait task)
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: admin_conf_check
+      changed_when: false
+
+    - name: Wait for admin.conf to be created
+      ansible.builtin.wait_for:
+        path: /etc/kubernetes/admin.conf
+        timeout: 300
+      when: not admin_conf_check.stat.exists
+      failed_when: false
+
+    - name: Setup kubectl for root
+      ansible.builtin.shell: |
+        mkdir -p $HOME/.kube
+        if [ -f /etc/kubernetes/admin.conf ]; then
+          cp -i /etc/kubernetes/admin.conf $HOME/.kube/config 2>/dev/null || true
+          chown root:root $HOME/.kube/config
+        fi
+      register: kubeconfig_setup
+      changed_when: false
+
+    - name: Create join token for control plane nodes
+      ansible.builtin.command: kubeadm token create --print-join-command
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: join_token_command
+      changed_when: true
+      failed_when: false
+
+    - name: Get certificate key for control plane join
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubeadm init phase upload-certs --upload-certs 2>&1 | tail -1
+      register: cert_key
+      changed_when: false
+
+    - name: Store join information
+      ansible.builtin.set_fact:
+        control_plane_join_command: "{{ join_token_command.stdout }} --control-plane --certificate-key {{ cert_key.stdout }}"
+        cluster_initialized: true
+
+    - name: Display join command for other masters
+      ansible.builtin.debug:
+        msg: "Join command for other masters: {{ control_plane_join_command }}"
+
+    - name: Wait for control plane pods to be ready
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=ready pod -l tier=control-plane -n kube-system --timeout=300s
+      register: control_plane_ready
+      retries: 30
+      delay: 10
+      failed_when: false
+      changed_when: false
+
+    # CoreDNS is created automatically during kubeadm init, but won't start without CNI
+    # Install Cilium immediately, then CoreDNS will start automatically
+
+    - name: Install Cilium CNI (immediately after init)
+      ansible.builtin.include_role:
+        name: cilium-install
+
+    - name: Wait for node to become Ready (after Cilium)
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl wait --for=condition=Ready node/k8s-master-1 --timeout=300s
+      register: node_ready_after_cilium
+      retries: 30
+      delay: 10
+      failed_when: false
+      changed_when: false
+
+    - name: Remove NoSchedule taint and add worker role (make first master schedulable)
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl taint nodes k8s-master-1 node-role.kubernetes.io/control-plane:NoSchedule- || true
+        kubectl taint nodes k8s-master-1 node-role.kubernetes.io/master:NoSchedule- || true
+        kubectl label node k8s-master-1 node-role.kubernetes.io/worker=worker --overwrite || true
+      register: first_master_config
+      changed_when: true
+
+    - name: Verify cluster is ready
+      ansible.builtin.shell: |
+        kubectl get nodes
+        kubectl get pods -n kube-system
+      register: cluster_status
+      changed_when: false
+
+    - name: Display cluster status
+      ansible.builtin.debug:
+        msg: "{{ cluster_status.stdout_lines }}"
+
+    - name: Final summary
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "Kubernetes cluster initialized successfully!"
+          - "Control Plane Endpoint: {{ control_plane_endpoint }}"
+          - "VIP: {{ kube_vip_vip }}"
+          - "Join command for other masters: {{ control_plane_join_command | default('Use stored join information') }}"
+          - "=========================================="

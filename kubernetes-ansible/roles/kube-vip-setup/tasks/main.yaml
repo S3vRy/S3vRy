@@ -1,0 +1,79 @@
+---
+- name: Create kube-vip directory
+  ansible.builtin.file:
+    path: /etc/kubernetes/manifests
+    state: directory
+    mode: '0755'
+
+- name: Create kube-vip config directory
+  ansible.builtin.file:
+    path: /etc/kube-vip
+    state: directory
+    mode: '0755'
+
+- name: Generate kube-vip manifest (Static Pod for control plane HA)
+  ansible.builtin.template:
+    src: kube-vip.yaml.j2
+    dest: /etc/kubernetes/manifests/kube-vip.yaml
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Create kube-vip service account and RBAC (for cloud mode, not needed for ARP)
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl apply -f - <<EOF
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: kube-vip
+      namespace: kube-system
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: system:kube-vip
+    rules:
+      - apiGroups: [""]
+        resources: ["services", "services/status", "nodes", "endpoints"]
+        verbs: ["list","get","watch", "update"]
+      - apiGroups: ["coordination.k8s.io"]
+        resources: ["leases"]
+        verbs: ["list", "get", "watch", "update", "create"]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: system:kube-vip
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: system:kube-vip
+    subjects:
+    - kind: ServiceAccount
+      name: kube-vip
+      namespace: kube-system
+    EOF
+  when: kube_vip_mode == "cloud"
+  register: kube_vip_rbac
+  changed_when: kube_vip_rbac.rc == 0
+  failed_when: false
+
+- name: Wait for kube-vip manifest to be processed by kubelet
+  ansible.builtin.pause:
+    seconds: 15
+  register: kube_vip_wait
+
+- name: Check kube-vip pod status
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl get pod -n kube-system -l app=kube-vip --no-headers 2>/dev/null || echo "not-ready"
+  register: kube_vip_pod_check
+  changed_when: false
+  failed_when: false
+  retries: 10
+  delay: 5
+
+- name: Display kube-vip status
+  ansible.builtin.debug:
+    msg: "kube-vip pod status: {{ kube_vip_pod_check.stdout }}"

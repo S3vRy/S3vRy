@@ -1,0 +1,52 @@
+---
+- name: Set hostname
+  hostname:
+    name: "{{ inventory_hostname }}"
+  register: hostname_set
+
+- name: Verify hostname is set correctly
+  command: hostname
+  register: current_hostname
+  changed_when: false
+
+- name: Assert hostname matches inventory
+  assert:
+    that:
+      - current_hostname.stdout == inventory_hostname
+    fail_msg: "Hostname {{ current_hostname.stdout }} does not match inventory {{ inventory_hostname }}"
+    success_msg: "Hostname correctly set to {{ inventory_hostname }}"
+
+- name: Get all host entries from inventory
+  set_fact:
+    hosts_block: |
+      {% for host in groups['all'] %}
+      {% set hostvars_item = hostvars[host] %}
+      {% if hostvars_item.ansible_host is defined %}
+      {{ hostvars_item.ansible_host }} {{ hostvars_item.inventory_hostname }}
+      {% if hostvars_item.vpn_ip is defined %}{{ hostvars_item.vpn_ip }} {{ hostvars_item.inventory_hostname }}-vpn{% endif %}
+      {% endif %}
+      {% endfor %}
+      {{ vpn_server_ip }} vpn-server
+
+- name: Configure /etc/hosts
+  blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - Kubernetes nodes"
+    block: "{{ hosts_block }}"
+    create: true
+    mode: '0644'
+
+- name: Verify /etc/hosts contains all nodes
+  command: grep -c "{{ inventory_hostname }}" /etc/hosts
+  register: hosts_check
+  changed_when: false
+  failed_when: false
+
+- name: Assert /etc/hosts is configured
+  assert:
+    that:
+      - hosts_check.rc == 0
+      - hosts_check.stdout | int > 0
+    fail_msg: "/etc/hosts is not properly configured"
+    success_msg: "/etc/hosts is properly configured"
+

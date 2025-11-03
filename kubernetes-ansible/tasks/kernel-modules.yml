@@ -1,0 +1,30 @@
+---
+- name: Load kernel modules immediately
+  command: modprobe {{ item }}
+  loop: "{{ k8s_kernel_modules }}"
+  register: modprobe_result
+  changed_when: false
+  failed_when: false
+
+- name: Configure kernel modules to load on boot
+  lineinfile:
+    path: /etc/modules-load.d/k8s.conf
+    line: "{{ item }}"
+    create: true
+    mode: '0644'
+  loop: "{{ k8s_kernel_modules }}"
+
+- name: Verify kernel modules are loaded
+  shell: lsmod | grep -E "{{ item }}"
+  register: module_check
+  loop: "{{ k8s_kernel_modules }}"
+  changed_when: false
+  failed_when: false
+
+- name: Assert all kernel modules are loaded
+  assert:
+    that:
+      - module_check.results | selectattr('rc', 'equalto', 0) | list | length == k8s_kernel_modules | length
+    fail_msg: "Not all required kernel modules are loaded"
+    success_msg: "All required kernel modules are loaded"
+

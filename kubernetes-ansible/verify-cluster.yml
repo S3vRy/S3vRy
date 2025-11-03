@@ -1,0 +1,436 @@
+---
+# ============================================================================
+# Verify Kubernetes Cluster Installation and Best Practices
+# ============================================================================
+# Performs comprehensive verification:
+# - Component versions
+# - IPVS mode
+# - Node and pod status
+# - Security settings
+# - Best practices compliance
+#
+# Tags: verify, validation
+# ============================================================================
+
+- name: Verify Kubernetes Cluster Installation and Best Practices
+  hosts: k8s_masters
+  become: true
+  gather_facts: true
+  tags:
+    - verify
+    - validation
+
+  vars:
+    verification_passed: true
+    verification_errors: []
+
+  tasks:
+    - name: Verify Debian 13
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Debian"
+          - ansible_distribution_major_version == "13"
+          - ansible_distribution_release == "trixie"
+        fail_msg: "System must be Debian 13 (Trixie)"
+        success_msg: "✓ Debian 13 (Trixie) verified"
+
+    - name: Verify containerd is running
+      ansible.builtin.systemd:
+        name: containerd
+      register: containerd_status
+
+    - name: Assert containerd is active
+      ansible.builtin.assert:
+        that:
+          - containerd_status.status.ActiveState == "active"
+        fail_msg: "✗ containerd is not running"
+        success_msg: "✓ containerd is running"
+
+    - name: Verify containerd version
+      ansible.builtin.command: containerd --version
+      register: containerd_version
+      changed_when: false
+
+    - name: Assert containerd version
+      ansible.builtin.assert:
+        that:
+          - "'containerd.io containerd' in containerd_version.stdout or 'github.com/containerd/containerd' in containerd_version.stdout"
+        fail_msg: "✗ containerd version check failed"
+        success_msg: "✓ containerd version: {{ containerd_version.stdout }}"
+
+    - name: Verify kubelet is installed
+      ansible.builtin.command: kubelet --version
+      register: kubelet_check
+      changed_when: false
+      failed_when: false
+
+    - name: Verify kubeadm is installed
+      ansible.builtin.command: kubeadm version -o short
+      register: kubeadm_check
+      changed_when: false
+      failed_when: false
+
+    - name: Verify kubectl is installed
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl version --client 2>&1 | head -1
+      register: kubectl_check
+      changed_when: false
+      failed_when: false
+
+    - name: Assert Kubernetes components are installed
+      ansible.builtin.assert:
+        that:
+          - kubelet_check.rc == 0
+          - kubeadm_check.rc == 0
+          - kubectl_check.rc == 0
+        fail_msg: "✗ Not all Kubernetes components are installed"
+        success_msg: "✓ All Kubernetes components installed (kubelet, kubeadm, kubectl)"
+
+    - name: Verify Kubernetes version is 1.34.1
+      ansible.builtin.command: kubelet --version
+      register: k8s_version
+      changed_when: false
+      failed_when: false
+
+    - name: Assert Kubernetes version
+      ansible.builtin.assert:
+        that:
+          - "'v1.34.1' in k8s_version.stdout"
+        fail_msg: "✗ Kubernetes version mismatch. Expected v1.34.1, got {{ k8s_version.stdout }}"
+        success_msg: "✓ Kubernetes version: {{ k8s_version.stdout }}"
+
+    - name: Verify kubelet service
+      ansible.builtin.systemd:
+        name: kubelet
+      register: kubelet_status
+
+    - name: Assert kubelet is active
+      ansible.builtin.assert:
+        that:
+          - kubelet_status.status.ActiveState == "active"
+        fail_msg: "✗ kubelet is not running"
+        success_msg: "✓ kubelet is running"
+
+    - name: Check IPVS modules are loaded
+      ansible.builtin.shell: |
+        set -o pipefail
+        lsmod | grep -E "ip_vs"
+      register: ipvs_modules
+      changed_when: false
+      failed_when: false
+
+    - name: Assert IPVS modules are loaded
+      ansible.builtin.assert:
+        that:
+          - "'ip_vs' in ipvs_modules.stdout"
+        fail_msg: "✗ IPVS kernel modules are not loaded"
+        success_msg: "✓ IPVS kernel modules loaded: {{ ipvs_modules.stdout.split('\n') | list }}"
+
+    - name: Check kube-proxy mode (from first master only)
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl get configmap kube-proxy -n kube-system -o yaml | grep -E 'mode:' | head -1
+      register: kube_proxy_mode_check
+      changed_when: false
+      failed_when: false
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Assert kube-proxy is using IPVS
+      ansible.builtin.assert:
+        that:
+          - "'ipvs' in kube_proxy_mode_check.stdout | lower"
+        fail_msg: "✗ kube-proxy is not using IPVS mode. Current: {{ kube_proxy_mode_check.stdout }}"
+        success_msg: "✓ kube-proxy is using IPVS mode"
+      when: inventory_hostname == groups['k8s_masters'][0] and kube_proxy_mode_check.rc == 0
+
+    - name: Check IPVS rules exist
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v ipvsadm >/dev/null 2>&1 && ipvsadm -Ln 2>&1 | wc -l || echo "0"
+      register: ipvs_rules_count
+      changed_when: false
+      failed_when: false
+
+    - name: Assert IPVS is active
+      ansible.builtin.assert:
+        that:
+          - ipvs_rules_count.stdout | int > 2
+        fail_msg: "✗ IPVS is not active or no rules found (count: {{ ipvs_rules_count.stdout }})"
+        success_msg: "✓ IPVS is active with rules ({{ ipvs_rules_count.stdout }} lines)"
+
+    - name: Verify nodes are Ready (from first master)
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl get nodes --no-headers | awk '{print $2}' | grep -c Ready || echo "0"
+      register: nodes_ready
+      changed_when: false
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Assert all master nodes are Ready
+      ansible.builtin.assert:
+        that:
+          - nodes_ready.stdout | int >= 3
+        fail_msg: "✗ Not all master nodes are Ready. Found: {{ nodes_ready.stdout }}"
+        success_msg: "✓ All {{ nodes_ready.stdout }} master nodes are Ready"
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Verify all nodes have control-plane and worker roles (from first master)
+      ansible.builtin.shell: |
+        set -o pipefail
+        JSONPATH='{range .items[*]}{.metadata.name}{"\t"}'
+        JSONPATH+='{.metadata.labels.node-role\.kubernetes\.io/control-plane}{"\t"}'
+        JSONPATH+='{.metadata.labels.node-role\.kubernetes\.io/worker}{"\n"}{end}'
+        kubectl get nodes -o jsonpath="$JSONPATH" | \
+        awk '$2 != "" && $3 == "worker" {count++} END {print count+0}'
+      register: nodes_with_both_roles
+      changed_when: false
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Assert all nodes have both control-plane and worker roles
+      ansible.builtin.assert:
+        that:
+          - nodes_with_both_roles.stdout | int == 3
+        fail_msg: "✗ Not all nodes have both control-plane and worker roles. Found: {{ nodes_with_both_roles.stdout }}/3"
+        success_msg: "✓ All {{ nodes_with_both_roles.stdout }} nodes have both control-plane and worker roles"
+      when: inventory_hostname == groups['k8s_masters'][0] and nodes_with_both_roles.rc == 0
+
+    - name: Verify all nodes have no taints (schedulable)
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl describe nodes | grep -A1 "^Taints:" | grep -c "<none>" || echo "0"
+      register: nodes_without_taints
+      changed_when: false
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Assert all nodes are schedulable (no taints)
+      ansible.builtin.assert:
+        that:
+          - nodes_without_taints.stdout | int == 3
+        fail_msg: "✗ Not all nodes are schedulable. Found {{ nodes_without_taints.stdout }}/3 nodes without taints"
+        success_msg: "✓ All {{ nodes_without_taints.stdout }} nodes are schedulable (no taints)"
+      when: inventory_hostname == groups['k8s_masters'][0] and nodes_without_taints.rc == 0
+
+    - name: Verify control plane pods (from first master)
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl get pods -n kube-system -l tier=control-plane --no-headers | grep Running | wc -l
+      register: control_plane_pods
+      changed_when: false
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Assert control plane pods are running
+      ansible.builtin.assert:
+        that:
+          - control_plane_pods.stdout | int >= 9
+        fail_msg: "✗ Not all control plane pods are running. Found: {{ control_plane_pods.stdout }}"
+        success_msg: "✓ Control plane pods running: {{ control_plane_pods.stdout }}"
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Verify kube-vip pods (from first master)
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl get pods -n kube-system | grep kube-vip | grep Running | wc -l
+      register: kube_vip_pods
+      changed_when: false
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Assert kube-vip pods are running on all masters
+      ansible.builtin.assert:
+        that:
+          - kube_vip_pods.stdout | int >= 3
+        fail_msg: "✗ kube-vip is not running on all masters. Found: {{ kube_vip_pods.stdout }}"
+        success_msg: "✓ kube-vip running on all {{ kube_vip_pods.stdout }} masters"
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Verify Cilium pods (from first master)
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl get pods -n kube-system | grep cilium | grep -v envoy | grep Running | wc -l
+      register: cilium_pods
+      changed_when: false
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Assert Cilium pods are running
+      ansible.builtin.assert:
+        that:
+          - cilium_pods.stdout | int >= 3
+        fail_msg: "✗ Cilium is not running on all nodes. Found: {{ cilium_pods.stdout }}"
+        success_msg: "✓ Cilium running on all {{ cilium_pods.stdout }} nodes"
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Verify CoreDNS pods (from first master)
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl get pods -n kube-system | grep coredns | grep Running | wc -l
+      register: coredns_pods
+      changed_when: false
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Assert CoreDNS pods are running (3 pods, 1 per node)
+      ansible.builtin.assert:
+        that:
+          - coredns_pods.stdout | int == 3
+        fail_msg: "✗ CoreDNS pods are not running. Expected: 3 (1 per node), Found: {{ coredns_pods.stdout }}"
+        success_msg: "✓ CoreDNS pods running: {{ coredns_pods.stdout }} (expected: 3, 1 per node)"
+      when: inventory_hostname == groups['k8s_masters'][0] and coredns_pods.rc == 0
+
+    - name: Verify CoreDNS pods distribution per node
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide --no-headers | awk '{print $7}' | sort | uniq -c
+      register: coredns_per_node
+      changed_when: false
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Assert CoreDNS has exactly 1 pod per node
+      ansible.builtin.assert:
+        that:
+          - coredns_per_node.stdout_lines | length == 3
+          - coredns_per_node.stdout_lines | select('match', '.*\\s+1\\s+.*') | list | length == 3
+        fail_msg: "✗ CoreDNS is not distributed correctly. Expected: 1 pod per node (3 nodes). Distribution: {{ coredns_per_node.stdout_lines }}"
+        success_msg: "✓ CoreDNS correctly distributed: 1 pod per node"
+      when: inventory_hostname == groups['k8s_masters'][0] and coredns_per_node.rc == 0
+
+    - name: Verify VIP is accessible (from first master)
+      ansible.builtin.uri:
+        url: "https://{{ kube_vip_vip }}:6443/healthz"
+        method: GET
+        validate_certs: false
+        status_code: [200]
+        timeout: 10
+      register: vip_check
+      changed_when: false
+      failed_when: false
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Assert VIP is accessible
+      ansible.builtin.assert:
+        that:
+          - vip_check.status == 200
+        fail_msg: "✗ VIP {{ kube_vip_vip }}:6443 is not accessible"
+        success_msg: "✓ VIP {{ kube_vip_vip }}:6443 is accessible"
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Verify cluster components health (from first master)
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl get componentstatuses 2>&1 | grep -E '(Healthy|ok)' | wc -l
+      register: components_health
+      changed_when: false
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Assert cluster components are healthy
+      ansible.builtin.assert:
+        that:
+          - components_health.stdout | int >= 2
+        fail_msg: "✗ Not all cluster components are healthy"
+        success_msg: "✓ Cluster components are healthy: {{ components_health.stdout }} components"
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Verify swap is disabled
+      ansible.builtin.command: swapon --show
+      register: swap_check
+      changed_when: false
+      failed_when: false
+
+    - name: Assert swap is disabled
+      ansible.builtin.assert:
+        that:
+          - swap_check.stdout == ""
+        fail_msg: "✗ Swap is still enabled on {{ inventory_hostname }}"
+        success_msg: "✓ Swap is disabled on {{ inventory_hostname }}"
+
+    - name: Verify sysctl settings
+      ansible.builtin.command: sysctl -n {{ item.key }}
+      register: sysctl_check
+      loop: "{{ k8s_sysctl_settings | dict2items }}"
+      changed_when: false
+      failed_when: false
+
+    - name: Assert sysctl settings match expected values
+      ansible.builtin.assert:
+        that:
+          - >
+            (item.item.key == 'net.netfilter.nf_conntrack_max' and
+             item.stdout | int >= 100000) or
+            (item.item.key != 'net.netfilter.nf_conntrack_max' and
+             k8s_sysctl_settings[item.item.key] | string == item.stdout | string)
+        fail_msg: |
+          ✗ Sysctl {{ item.item.key }} mismatch on {{ inventory_hostname }}.
+          Expected: {{ k8s_sysctl_settings[item.item.key] }}, Got: {{ item.stdout }}
+          {% if item.item.key == 'net.netfilter.nf_conntrack_max' %}
+          (Note: nf_conntrack_max is checked that >= 100000 for stable IPVS operation)
+          {% endif %}
+        success_msg: "✓ Sysctl {{ item.item.key }} = {{ item.stdout }}"
+      loop: "{{ sysctl_check.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+
+    - name: Verify firewall is configured
+      ansible.builtin.shell: |
+        set -o pipefail
+        ufw status | head -5
+      register: ufw_status
+      changed_when: false
+      failed_when: false
+
+    - name: Assert firewall is active
+      ansible.builtin.assert:
+        that:
+          - "'Status: active' in ufw_status.stdout"
+        fail_msg: "✗ UFW firewall is not active on {{ inventory_hostname }}"
+        success_msg: "✓ UFW firewall is active on {{ inventory_hostname }}"
+      when: firewall_enabled | default(true)
+
+    - name: Verify Helm installation
+      ansible.builtin.command: helm version --client --short
+      register: helm_version_check
+      changed_when: false
+      failed_when: false
+
+    - name: Assert Helm is installed
+      ansible.builtin.assert:
+        that:
+          - helm_version_check.rc == 0
+          - "'v3.14.4' in helm_version_check.stdout"
+        fail_msg: "✗ Helm v3.14.4 is not installed correctly"
+        success_msg: "✓ Helm installed: {{ helm_version_check.stdout }}"
+
+    - name: Display comprehensive cluster status (from first master)
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "=== CLUSTER STATUS ==="
+        kubectl get nodes -o wide
+        echo ""
+        echo "=== CONTROL PLANE PODS ==="
+        kubectl get pods -n kube-system -l tier=control-plane
+        echo ""
+        echo "=== NETWORK COMPONENTS ==="
+        kubectl get pods -n kube-system | grep -E '(cilium|coredns|kube-proxy|kube-vip)'
+        echo ""
+        echo "=== IPVS STATUS ==="
+        ipvsadm -Ln | head -10
+      register: cluster_status
+      changed_when: false
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Display cluster status
+      ansible.builtin.debug:
+        msg: "{{ cluster_status.stdout_lines }}"
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Final verification summary
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "✅ ALL CHECKS PASSED SUCCESSFULLY!"
+          - "=========================================="
+          - "✓ Kubernetes 1.34.1 cluster is running"
+          - "✓ All 3 master nodes Ready"
+          - "✓ IPVS mode is active"
+          - "✓ kube-vip provides HA"
+          - "✓ Cilium CNI is running"
+          - "✓ All components comply with best practices"
+          - "=========================================="
+      when: inventory_hostname == groups['k8s_masters'][0]

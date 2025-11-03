@@ -1,0 +1,54 @@
+---
+- name: Create sysctl configuration file
+  lineinfile:
+    path: /etc/sysctl.d/99-k8s.conf
+    regexp: "^#?{{ item.key | regex_escape() }}\\s*="
+    line: "{{ item.key }} = {{ item.value }}"
+    create: true
+    mode: '0644'
+  loop: "{{ k8s_sysctl_settings | dict2items }}"
+  register: sysctl_config
+
+- name: Apply sysctl settings
+  shell: sysctl -p /etc/sysctl.d/99-k8s.conf
+  register: sysctl_apply
+  changed_when: false
+
+- name: Verify sysctl settings are applied
+  shell: sysctl -n {{ item.key }}
+  register: sysctl_verify
+  loop: "{{ k8s_sysctl_settings | dict2items }}"
+  changed_when: false
+
+- name: Assert sysctl settings match
+  assert:
+    that:
+      - item.value | string == (sysctl_verify.results | selectattr('item.key', 'equalto', item.key) | first).stdout | string
+    fail_msg: "Sysctl setting {{ item.key }} = {{ item.value }} is not correctly set (got {{ (sysctl_verify.results | selectattr('item.key', 'equalto', item.key) | first).stdout }})"
+    success_msg: "Sysctl setting {{ item.key }} = {{ item.value }} is correctly set"
+  loop: "{{ k8s_sysctl_settings | dict2items }}"
+
+- name: Check if /etc/resolv.conf is immutable
+  command: lsattr /etc/resolv.conf
+  register: resolv_attr_check
+  changed_when: false
+  failed_when: false
+
+- name: Make /etc/resolv.conf immutable
+  command: chattr +i /etc/resolv.conf
+  when: "'i' not in resolv_attr_check.stdout | default('')"
+  register: chattr_result
+  changed_when: "'i' not in resolv_attr_check.stdout | default('')"
+
+- name: Verify /etc/resolv.conf is immutable
+  command: lsattr /etc/resolv.conf
+  register: lsattr_result
+  changed_when: false
+
+- name: Assert /etc/resolv.conf is immutable
+  assert:
+    that:
+      - "'i' in lsattr_result.stdout"
+    fail_msg: "/etc/resolv.conf is not immutable"
+    success_msg: "/etc/resolv.conf is immutable"
+

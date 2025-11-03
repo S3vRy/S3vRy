@@ -1,0 +1,16 @@
+[DEFAULT]
+# Ban hosts for one hour
+bantime = {{ fail2ban_bantime }}
+# Override /etc/fail2ban/jail.d/00-debian.conf defaults
+banaction = ufw
+backend = systemd
+
+[sshd]
+enabled = true
+port = ssh
+logpath = %(sshd_log)s
+backend = %(sshd_backend)s
+maxretry = {{ fail2ban_maxretry }}
+findtime = {{ fail2ban_findtime }}
+bantime = {{ fail2ban_bantime }}
+

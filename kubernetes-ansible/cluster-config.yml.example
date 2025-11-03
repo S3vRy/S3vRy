@@ -1,0 +1,135 @@
+---
+# ============================================================================
+# Kubernetes Cluster Configuration
+# ============================================================================
+# This is an EXAMPLE configuration file.
+# 
+# To use:
+#   1. Copy this file: cp cluster-config.yml.example cluster-config.yml
+#   2. Edit cluster-config.yml with your actual settings
+#   3. Generate inventory: python3 generate-inventory.py
+#   4. Run playbook: ansible-playbook site.yml
+#
+# DO NOT edit this example file - edit cluster-config.yml instead
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Cluster Information
+# ----------------------------------------------------------------------------
+cluster_name: "production-k8s"
+cluster_environment: "production"  # production, staging, development
+
+# ----------------------------------------------------------------------------
+# Master Nodes Configuration
+# ----------------------------------------------------------------------------
+# Configure your master nodes here
+masters:
+  - name: "k8s-master-1"
+    ansible_host: "192.168.1.10"      # External IP address
+    ansible_user: "root"                # SSH user
+    vpn_ip: "10.0.0.1"                 # VPN/internal IP (optional)
+  
+  - name: "k8s-master-2"
+    ansible_host: "192.168.1.11"
+    ansible_user: "root"
+    vpn_ip: "10.0.0.2"
+  
+  - name: "k8s-master-3"
+    ansible_host: "192.168.1.12"
+    ansible_user: "root"
+    vpn_ip: "10.0.0.3"
+
+# ----------------------------------------------------------------------------
+# VPN/Network Configuration
+# ----------------------------------------------------------------------------
+vpn_server_ip: "192.168.1.1"           # VPN server IP (optional)
+vpn_network: "10.0.0.0/24"              # VPN network CIDR (optional)
+
+# ----------------------------------------------------------------------------
+# Kubernetes Network Configuration
+# ----------------------------------------------------------------------------
+pod_network_cidr: "10.244.0.0/16"      # Pod network CIDR
+service_network_cidr: "10.96.0.0/12"    # Service network CIDR
+
+# Control Plane Endpoint (VIP or first master IP)
+# If using kube-vip, this should be the VIP address
+control_plane_endpoint: "192.168.1.10:6443"
+kube_vip_vip: "192.168.1.10"            # kube-vip virtual IP (usually first master IP)
+
+# ----------------------------------------------------------------------------
+# Security Configuration
+# ----------------------------------------------------------------------------
+# SSH allowed IPs (list of networks/IPs allowed for SSH access)
+# Master node IPs are automatically added from masters list
+# You can add custom IPs/networks here:
+ssh_allowed_ips:
+  # - "10.0.0.0/24"      # Example: VPN network (uncomment and configure)
+  # - "192.168.1.1/32"    # Example: VPN server IP (uncomment and configure)
+  # - "203.0.113.0/24"   # Example: Custom network (uncomment and configure)
+
+# Firewall configuration
+firewall_enabled: true
+firewall_log_drops: true
+firewall_default_policy: "deny"
+
+# Public ports (accessible from any IP)
+public_ports:
+  - "80/tcp"
+  - "443/tcp"
+
+# ----------------------------------------------------------------------------
+# Component Versions
+# ----------------------------------------------------------------------------
+k8s_version: "1.34.1"
+containerd_version: "2.1.3"
+cilium_version: "1.18.3"
+kube_vip_version: "0.7.0"
+helm_version: "3.14.4"
+
+# ----------------------------------------------------------------------------
+# kube-vip Configuration
+# ----------------------------------------------------------------------------
+kube_vip_mode: "arp"                    # arp or cloud
+kube_vip_interface: "eth0"              # Network interface for kube-vip
+
+# ----------------------------------------------------------------------------
+# Kubernetes Configuration
+# ----------------------------------------------------------------------------
+kube_proxy_mode: "ipvs"                 # ipvs or iptables
+
+# ----------------------------------------------------------------------------
+# System Configuration
+# ----------------------------------------------------------------------------
+timezone: "UTC"
+locale: "en_US.UTF-8"
+ansible_user: "root"                     # Default SSH user (can be overridden per host)
+
+# ----------------------------------------------------------------------------
+# Advanced Configuration (Optional)
+# ----------------------------------------------------------------------------
+# Uncomment and modify if needed:
+
+# fail2ban_configuration:
+#   enabled: true
+#   maxretry: 3
+#   bantime: 3600
+#   findtime: 600
+
+# unattended_upgrades:
+#   enabled: true
+#   auto_reboot: false
+#   mail: false
+
+# auditd:
+#   enabled: true
+
+# ----------------------------------------------------------------------------
+# Notes
+# ----------------------------------------------------------------------------
+# 1. After editing this file, run the playbook:
+#    ansible-playbook -i inventory.yml site.yml
+#
+# 2. Make sure SSH keys are set up for passwordless access
+#
+# 3. Ensure all master nodes have the same configuration
+

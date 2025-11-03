@@ -1,0 +1,61 @@
+---
+- name: Wait for Kubernetes API to be ready
+  ansible.builtin.uri:
+    url: "https://{{ control_plane_endpoint.split(':')[0] }}:6443/healthz"
+    method: GET
+    validate_certs: false
+    status_code: [200]
+    timeout: 30
+  register: api_ready
+  until: api_ready.status == 200
+  retries: 30
+  delay: 10
+  failed_when: false
+
+- name: Check if Cilium is already installed
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl get pods -n kube-system -l k8s-app=cilium --no-headers 2>/dev/null | grep -q Running && echo "installed" || echo "not-installed"
+  register: cilium_check
+  changed_when: false
+
+- name: Install Cilium CLI
+  ansible.builtin.shell: |
+    set -o pipefail
+    CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
+    CLI_ARCH=amd64
+    if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH=arm64; fi
+    cd /tmp
+    curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
+    sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
+    tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin
+    rm -f cilium-linux-${CLI_ARCH}.tar.gz cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
+  register: cilium_cli_install
+  when: "'not-installed' in cilium_check.stdout"
+  changed_when: "'extracted' in cilium_cli_install.stdout or 'created' in cilium_cli_install.stdout"
+
+- name: Install Cilium CNI using CLI (default configuration)
+  ansible.builtin.shell: |
+    cilium install --version {{ cilium_version }}
+  register: cilium_install
+  when: "'not-installed' in cilium_check.stdout"
+  changed_when: "'Installing' in cilium_install.stdout or 'created' in cilium_install.stdout"
+
+- name: Wait for Cilium to be ready
+  ansible.builtin.shell: |
+    sleep 30
+    cilium status --wait
+  register: cilium_wait
+  retries: 30
+  delay: 10
+  failed_when: false
+  changed_when: false
+  when: "'not-installed' in cilium_check.stdout"
+
+- name: Verify Cilium installation
+  ansible.builtin.shell: |
+    cilium status
+    kubectl get pods -n kube-system -l k8s-app=cilium
+  register: cilium_status
+  changed_when: false
+  failed_when: false

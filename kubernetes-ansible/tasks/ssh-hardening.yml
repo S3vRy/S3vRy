@@ -1,0 +1,134 @@
+---
+- name: Check current OpenSSH version
+  command: ssh -V 2>&1
+  register: ssh_version
+  changed_when: false
+  failed_when: false
+
+- name: Extract OpenSSH version
+  set_fact:
+    ssh_version_full: "{{ (ssh_version.stdout | default('') + ssh_version.stderr | default('')) | regex_search('OpenSSH_([0-9]+)\\.([0-9]+)', '\\1') | first | default('0') }}"
+    ssh_version_minor: "{{ (ssh_version.stdout | default('') + ssh_version.stderr | default('')) | regex_search('OpenSSH_([0-9]+)\\.([0-9]+)', '\\2') | first | default('0') }}"
+
+- name: Assert OpenSSH version >= 9.6
+  assert:
+    that:
+      - (ssh_version_full | int > 9) or (ssh_version_full | int == 9 and ssh_version_minor | int >= 6)
+    fail_msg: "OpenSSH version must be >= 9.6. Current version: {{ ssh_version_full }}.{{ ssh_version_minor }}"
+    success_msg: "OpenSSH version {{ ssh_version_full }}.{{ ssh_version_minor }} meets requirement (>= 9.6)"
+
+- name: Backup existing sshd_config
+  copy:
+    src: /etc/ssh/sshd_config
+    dest: /etc/ssh/sshd_config.backup
+    remote_src: true
+    mode: '0600'
+
+- name: Configure SSH - PermitRootLogin
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PermitRootLogin\s+.*'
+    line: "PermitRootLogin {{ ssh_permit_root_login }}"
+    backup: true
+    validate: /usr/sbin/sshd -tf %s
+
+- name: Configure SSH - PasswordAuthentication
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PasswordAuthentication\s+.*'
+    line: "PasswordAuthentication {{ ssh_password_authentication }}"
+    backup: true
+    validate: /usr/sbin/sshd -tf %s
+
+- name: Configure SSH - AllowUsers
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?AllowUsers\s+.*'
+    line: "AllowUsers {{ ssh_allow_users }}"
+    backup: true
+    validate: /usr/sbin/sshd -tf %s
+
+- name: Ensure PubkeyAuthentication is enabled
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PubkeyAuthentication\s+.*'
+    line: "PubkeyAuthentication yes"
+    backup: true
+    validate: /usr/sbin/sshd -tf %s
+
+- name: Configure SSH additional security settings
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?{{ item.regexp }}'
+    line: "{{ item.line }}"
+    backup: true
+    validate: /usr/sbin/sshd -tf %s
+  loop:
+    - { regexp: 'Protocol\s+.*', line: 'Protocol 2' }
+    - { regexp: 'PermitEmptyPasswords\s+.*', line: 'PermitEmptyPasswords no' }
+    - { regexp: 'MaxAuthTries\s+.*', line: 'MaxAuthTries 3' }
+    - { regexp: 'ClientAliveInterval\s+.*', line: 'ClientAliveInterval 300' }
+    - { regexp: 'ClientAliveCountMax\s+.*', line: 'ClientAliveCountMax 2' }
+    - { regexp: 'X11Forwarding\s+.*', line: 'X11Forwarding no' }
+    - { regexp: 'UsePAM\s+.*', line: 'UsePAM yes' }
+  notify: restart ssh
+
+- name: Verify SSH configuration
+  command: /usr/sbin/sshd -t
+  register: sshd_test
+  changed_when: false
+
+- name: Assert SSH configuration is valid
+  assert:
+    that:
+      - sshd_test.rc == 0
+    fail_msg: "SSH configuration is invalid: {{ sshd_test.stderr }}"
+    success_msg: "SSH configuration is valid"
+
+- name: Restart SSH service
+  systemd:
+    name: ssh
+    state: restarted
+    daemon_reload: true
+  register: ssh_restart
+
+- name: Verify SSH service is running
+  systemd:
+    name: ssh
+  register: ssh_status
+
+- name: Assert SSH service is running
+  assert:
+    that:
+      - ssh_status.status.ActiveState == "active"
+    fail_msg: "SSH service is not running"
+    success_msg: "SSH service is running"
+
+- name: Configure fail2ban
+  template:
+    src: templates/jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart fail2ban
+
+- name: Enable and start fail2ban
+  systemd:
+    name: fail2ban
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Verify fail2ban is running
+  command: systemctl is-active fail2ban
+  register: fail2ban_status
+  changed_when: false
+
+- name: Assert fail2ban is running
+  assert:
+    that:
+      - fail2ban_status.stdout == "active"
+    fail_msg: "fail2ban is not running"
+    success_msg: "fail2ban is running"
+

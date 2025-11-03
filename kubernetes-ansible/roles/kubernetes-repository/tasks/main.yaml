@@ -1,0 +1,46 @@
+---
+- name: Install required packages for repository setup
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gpg
+    state: present
+    update_cache: false
+
+- name: Create directory for Kubernetes apt keyring
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Download Kubernetes repository GPG key
+  ansible.builtin.get_url:
+    url: "{{ k8s_repo_key_url }}"
+    dest: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    mode: '0644'
+  register: k8s_key_download
+
+- name: Add Kubernetes repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] {{ k8s_repo_url }} /"
+    filename: kubernetes
+    state: present
+    update_cache: true
+    mode: '0644'
+
+- name: Verify Kubernetes repository is added
+  ansible.builtin.command: apt-cache policy kubelet
+  register: k8s_repo_verify
+  changed_when: false
+
+- name: Display available Kubernetes versions
+  ansible.builtin.debug:
+    msg: "{{ k8s_repo_verify.stdout_lines }}"
+
+- name: Assert Kubernetes version is available ({{ k8s_version }})
+  ansible.builtin.assert:
+    that:
+      - k8s_version in k8s_repo_verify.stdout
+    fail_msg: "Kubernetes {{ k8s_version }} is not available in repository"
+    success_msg: "Kubernetes {{ k8s_version }} is available"

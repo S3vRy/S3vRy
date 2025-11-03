@@ -1,0 +1,122 @@
+---
+- name: Verify system is ready for Kubernetes
+  block:
+    - name: Check swap is disabled
+      command: swapon --show
+      register: final_swap_check
+      changed_when: false
+
+    - name: Assert swap is disabled
+      assert:
+        that:
+          - final_swap_check.stdout == ""
+        fail_msg: "Swap is still enabled"
+        success_msg: "Swap is disabled"
+
+    - name: Check required kernel modules
+      shell: lsmod | grep -E "{{ item }}"
+      register: final_modules_check
+      loop: "{{ k8s_kernel_modules }}"
+      changed_when: false
+      failed_when: false
+
+    - name: Assert all kernel modules are loaded
+      assert:
+        that:
+          - final_modules_check.results | selectattr('rc', 'equalto', 0) | list | length == k8s_kernel_modules | length
+        fail_msg: "Not all kernel modules are loaded"
+        success_msg: "All kernel modules are loaded"
+
+    - name: Check sysctl settings
+      shell: sysctl -n {{ item.key }}
+      loop: "{{ k8s_sysctl_settings | dict2items }}"
+      register: final_sysctl_check
+      changed_when: false
+
+    - name: Assert sysctl settings are correct
+      assert:
+        that:
+          - item.value | string == (final_sysctl_check.results | selectattr('item.key', 'equalto', item.key) | first).stdout | string
+        fail_msg: "Sysctl {{ item.key }} is not set correctly"
+        success_msg: "Sysctl {{ item.key }} is set correctly"
+      loop: "{{ k8s_sysctl_settings | dict2items }}"
+
+    - name: Check firewall is active
+      command: ufw status
+      register: final_firewall_check
+      changed_when: false
+
+    - name: Assert firewall is active
+      assert:
+        that:
+          - "'Status: active' in final_firewall_check.stdout"
+        fail_msg: "Firewall is not active"
+        success_msg: "Firewall is active"
+
+    - name: Check SSH service
+      systemd:
+        name: ssh
+      register: final_ssh_check
+
+    - name: Assert SSH service is running
+      assert:
+        that:
+          - final_ssh_check.status.ActiveState == "active"
+        fail_msg: "SSH service is not running"
+        success_msg: "SSH service is running"
+
+    - name: Check auditd service
+      systemd:
+        name: auditd
+      register: final_auditd_check
+
+    - name: Assert auditd service is running
+      assert:
+        that:
+          - final_auditd_check.status.ActiveState == "active"
+        fail_msg: "auditd service is not running"
+        success_msg: "auditd service is running"
+
+    - name: Check fail2ban service
+      systemd:
+        name: fail2ban
+      register: final_fail2ban_check
+
+    - name: Assert fail2ban service is running
+      assert:
+        that:
+          - final_fail2ban_check.status.ActiveState == "active"
+        fail_msg: "fail2ban service is not running"
+        success_msg: "fail2ban service is running"
+
+    - name: Verify required packages
+      command: dpkg -l {{ item }}
+      register: final_packages_check
+      loop: "{{ k8s_required_packages }}"
+      changed_when: false
+      failed_when: false
+
+    - name: Assert all packages are installed
+      assert:
+        that:
+          - final_packages_check.results | selectattr('rc', 'equalto', 0) | list | length == k8s_required_packages | length
+        fail_msg: "Not all required packages are installed"
+        success_msg: "All required packages are installed"
+
+- name: Display system readiness summary
+  debug:
+    msg:
+      - "=========================================="
+      - "System Readiness Summary for {{ inventory_hostname }}"
+      - "=========================================="
+      - "Swap: Disabled ✓"
+      - "Kernel Modules: Loaded ✓"
+      - "Sysctl Settings: Configured ✓"
+      - "Firewall: Active ✓"
+      - "SSH: Hardened ✓"
+      - "auditd: Running ✓"
+      - "fail2ban: Running ✓"
+      - "Packages: Installed ✓"
+      - "System is PRODUCTION-READY for Kubernetes 1.34.1"
+      - "=========================================="
+

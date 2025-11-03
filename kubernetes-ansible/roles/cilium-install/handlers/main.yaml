@@ -1,0 +1,7 @@
+---
+- name: Restart Cilium
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl rollout restart daemonset/cilium -n kube-system
+    kubectl rollout restart deployment/cilium-operator -n kube-system
+  changed_when: true

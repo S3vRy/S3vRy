@@ -1,0 +1,62 @@
+---
+# Example kubeadm configuration for Kubernetes 1.34.1 with IPVS mode
+# Use this after running the Ansible playbook
+# 
+# Usage:
+#   kubeadm init --config=kubeadm-config-ipvs.yaml
+
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: "0.0.0.0"
+  bindPort: 6443
+nodeRegistration:
+  criSocket: unix:///var/run/containerd.sock
+  # Or for Docker: unix:///var/run/dockershim.sock
+  # Or for CRI-O: unix:///var/run/crio/crio.sock
+
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: v1.34.1
+controlPlaneEndpoint: "your-loadbalancer-ip:6443"  # Replace with your LB IP
+apiServer:
+  extraArgs:
+    authorization-mode: "Node,RBAC"
+    audit-log-path: /var/log/audit/kube-apiserver-audit.log
+    audit-policy-file: /etc/kubernetes/audit-policy.yaml
+  certSANs:
+    - "your-loadbalancer-ip"  # Replace with your load balancer IP or VIP
+    - "192.168.1.10"            # Replace with master node 1 IP
+    - "192.168.1.11"            # Replace with master node 2 IP
+    - "192.168.1.12"            # Replace with master node 3 IP
+controllerManager:
+  extraArgs:
+    bind-address: "0.0.0.0"
+scheduler:
+  extraArgs:
+    bind-address: "0.0.0.0"
+networking:
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/12"
+dns: {}
+
+---
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+mode: ipvs
+ipvs:
+  scheduler: "rr"  # Round-robin scheduling
+  excludeCIDRs: []
+  strictARP: true
+  tcpTimeout: 0s
+  tcpFinTimeout: 0s
+  udpTimeout: 0s
+
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+failSwapOn: true
+protectKernelDefaults: true
+

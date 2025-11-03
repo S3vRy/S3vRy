@@ -1,0 +1,86 @@
+---
+- name: Ensure auditd is configured properly
+  template:
+    src: templates/auditd.conf.j2
+    dest: /etc/audit/auditd.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart auditd
+
+- name: Configure audit rules for system calls
+  copy:
+    content: |
+      ## First rule - delete all
+      -D
+
+      ## Buffer settings
+      -b 8192
+
+      ## Failure Mode
+      -f 1
+
+      ## Make the configuration immutable
+      -e 2
+
+      ## Kernel module loading/unloading
+      -w /sbin/modprobe -p x -k modules
+
+      ## System time
+      -a always,exit -F arch=b64 -S adjtimex -S settimeofday -k time-change
+      -a always,exit -F arch=b32 -S settimeofday -S stime -k time-change
+      -w /etc/localtime -p wa -k time-change
+
+      ## User/group changes
+      -w /etc/group -p wa -k identity
+      -w /etc/passwd -p wa -k identity
+      -w /etc/gshadow -p wa -k identity
+      -w /etc/shadow -p wa -k identity
+      -w /etc/security/opasswd -p wa -k identity
+
+      ## Network configuration
+      -a always,exit -F arch=b64 -S sethostname -S setdomainname -k system-locale
+      -w /etc/issue -p wa -k system-locale
+      -w /etc/issue.net -p wa -k system-locale
+      -w /etc/hosts -p wa -k system-locale
+      -w /etc/sysconfig/network -p wa -k system-locale
+
+      ## Login/logout
+      -w /var/log/faillog -p wa -k logins
+      -w /var/log/lastlog -p wa -k logins
+      -w /var/log/tallylog -p wa -k logins
+
+      ## Session rules
+      -w /var/run/utmp -p wa -k session
+      -w /var/log/wtmp -p wa -k session
+      -w /var/log/btmp -p wa -k session
+
+      ## Sudo commands
+      -w /etc/sudoers -p wa -k actions
+      -w /etc/sudoers.d/ -p wa -k actions
+
+      ## Kernel module loading
+      -w /sbin/insmod -p x -k modules
+      -w /sbin/rmmod -p x -k modules
+      -w /sbin/modprobe -p x -k modules
+      -a always,exit -F arch=b64 -S init_module -S delete_module -k modules
+    dest: /etc/audit/rules.d/k8s.rules
+    owner: root
+    group: root
+    mode: '0640'
+  notify: restart auditd
+
+- name: Verify auditd rules are loaded
+  command: auditctl -l
+  register: audit_rules
+  changed_when: false
+  failed_when: false
+
+- name: Ensure log rotation is configured
+  template:
+    src: templates/logrotate-audit.j2
+    dest: /etc/logrotate.d/audit
+    owner: root
+    group: root
+    mode: '0644'
+

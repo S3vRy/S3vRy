@@ -1,0 +1,79 @@
+---
+- name: Pin Kubernetes packages to specific version
+  ansible.builtin.lineinfile:
+    path: /etc/apt/preferences.d/kubernetes
+    regexp: '^Package: {{ item }}$'
+    line: |
+      Package: {{ item }}
+      Pin: version {{ k8s_version }}-*
+      Pin-Priority: 1000
+    create: true
+    mode: '0644'
+    state: present
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+- name: Install Kubernetes components
+  ansible.builtin.apt:
+    name:
+      - kubelet={{ k8s_version }}-*
+      - kubeadm={{ k8s_version }}-*
+      - kubectl={{ k8s_version }}-*
+    state: present
+    update_cache: false
+    allow_downgrade: false
+  register: k8s_install
+
+- name: Hold Kubernetes packages to prevent auto-upgrade
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+- name: Enable kubelet service
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    daemon_reload: true
+
+- name: Verify kubelet version
+  ansible.builtin.command: kubelet --version
+  register: kubelet_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Verify kubeadm version
+  ansible.builtin.command: kubeadm version -o short
+  register: kubeadm_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Verify kubectl version
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl version --client 2>&1 | head -1
+  register: kubectl_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Display Kubernetes component versions
+  ansible.builtin.debug:
+    msg: "{{ item.name }}: {{ item.version }}"
+  loop:
+    - { name: "kubelet", version: "{{ kubelet_version_check.stdout | default('Not found') }}" }
+    - { name: "kubeadm", version: "{{ kubeadm_version_check.stdout | default('Not found') }}" }
+    - { name: "kubectl", version: "{{ kubectl_version_check.stdout | default('Not found') }}" }
+
+- name: Assert all Kubernetes components are installed
+  ansible.builtin.assert:
+    that:
+      - kubelet_version_check.rc == 0
+      - kubeadm_version_check.rc == 0
+      - kubectl_version_check.rc == 0
+    fail_msg: "Not all Kubernetes components are installed"
+    success_msg: "All Kubernetes components installed successfully"

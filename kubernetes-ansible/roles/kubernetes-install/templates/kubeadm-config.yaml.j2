@@ -1,0 +1,71 @@
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: "{{ ansible_host }}"
+  bindPort: 6443
+nodeRegistration:
+  criSocket: unix://{{ containerd_socket }}
+{% if kubelet_extra_args is defined and kubelet_extra_args | length > 0 %}
+  kubeletExtraArgs:
+{% for key, value in kubelet_extra_args.items() %}
+    - name: "{{ key }}"
+      value: "{{ value }}"
+{% endfor %}
+{% endif %}
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: {{ k8s_version_full }}
+controlPlaneEndpoint: "{{ control_plane_endpoint }}"
+networking:
+  podSubnet: "{{ pod_network_cidr }}"
+  serviceSubnet: "{{ service_network_cidr }}"
+apiServer:
+  certSANs:
+    - {{ kube_vip_vip }}
+    - {{ control_plane_endpoint.split(':')[0] }}
+{% for master in groups['k8s_masters'] %}
+    - {{ hostvars[master].ansible_host }}
+    - {{ hostvars[master].vpn_ip }}
+{% endfor %}
+{% if apiserver_extra_args is defined and apiserver_extra_args | length > 0 %}
+  extraArgs:
+{% for key, value in apiserver_extra_args.items() %}
+    - name: "{{ key }}"
+      value: "{{ value }}"
+{% endfor %}
+{% endif %}
+controllerManager:
+{% if controller_manager_extra_args is defined and controller_manager_extra_args | length > 0 %}
+  extraArgs:
+{% for key, value in controller_manager_extra_args.items() %}
+    - name: "{{ key }}"
+      value: "{{ value }}"
+{% endfor %}
+{% endif %}
+scheduler:
+{% if scheduler_extra_args is defined and scheduler_extra_args | length > 0 %}
+  extraArgs:
+{% for key, value in scheduler_extra_args.items() %}
+    - name: "{{ key }}"
+      value: "{{ value }}"
+{% endfor %}
+{% endif %}
+etcd:
+  local:
+    dataDir: "/var/lib/etcd"
+---
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+mode: {{ kube_proxy_mode }}
+ipvs:
+  scheduler: "rr"
+  strictARP: true
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+failSwapOn: true
+protectKernelDefaults: true
+

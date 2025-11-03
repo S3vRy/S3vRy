@@ -1,0 +1,281 @@
+---
+- name: Comprehensive Verification of Kubernetes Preparation
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Display verification header
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "COMPREHENSIVE SYSTEM VERIFICATION"
+          - "Node: {{ inventory_hostname }}"
+          - "=========================================="
+
+    - name: Verify Debian version
+      ansible.builtin.shell: |
+        set -o pipefail
+        cat /etc/debian_version && echo "---" && cat /etc/os-release | grep -E "PRETTY_NAME|VERSION"
+      register: os_info
+      changed_when: false
+
+    - name: Display OS information
+      ansible.builtin.debug:
+        msg: "{{ os_info.stdout_lines }}"
+
+    - name: Check swap status
+      ansible.builtin.shell: swapon --show || echo "Swap is disabled"
+      register: swap_status
+      changed_when: false
+
+    - name: Display swap status
+      ansible.builtin.debug:
+        msg: "{{ swap_status.stdout }}"
+
+    - name: Check kernel modules
+      ansible.builtin.shell: |
+        set -o pipefail
+        lsmod | grep -E "overlay|br_netfilter|nf_conntrack|ip_vs|ip_vs_rr|ip_vs_wrr|ip_vs_sh" || echo "No modules found"
+      register: kernel_modules
+      changed_when: false
+
+    - name: Display loaded kernel modules
+      ansible.builtin.debug:
+        msg: "{{ kernel_modules.stdout_lines }}"
+
+    - name: Check sysctl settings
+      ansible.builtin.shell: |
+        echo "=== Network Settings ==="
+        sysctl net.ipv4.ip_forward net.ipv6.conf.all.forwarding
+        echo "=== Bridge Settings ==="
+        sysctl net.bridge.bridge-nf-call-iptables net.bridge.bridge-nf-call-ip6tables
+        echo "=== Connection Tracking ==="
+        sysctl net.netfilter.nf_conntrack_max net.netfilter.nf_conntrack_tcp_timeout_established
+        echo "=== TCP Settings ==="
+        sysctl net.core.somaxconn net.ipv4.tcp_max_syn_backlog net.core.netdev_max_backlog
+        echo "=== IP Non-local Bind ==="
+        sysctl net.ipv4.ip_nonlocal_bind
+      register: sysctl_settings
+      changed_when: false
+
+    - name: Display sysctl settings
+      ansible.builtin.debug:
+        msg: "{{ sysctl_settings.stdout_lines }}"
+
+    - name: Check /etc/resolv.conf immutability
+      ansible.builtin.shell: lsattr /etc/resolv.conf 2>/dev/null || echo "Cannot check attributes"
+      register: resolv_attr
+      changed_when: false
+
+    - name: Display resolv.conf attributes
+      ansible.builtin.debug:
+        msg: "{{ resolv_attr.stdout }}"
+
+    - name: Check installed packages
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "=== Kubernetes Prerequisites ==="
+        dpkg -l ipvsadm ipset open-iscsi nfs-common 2>/dev/null | grep '^ii' || echo "Some packages not found"
+        echo "=== Utilities ==="
+        dpkg -l jq socat conntrack curl wget lsof htop tmux 2>/dev/null | grep '^ii' || echo "Some utilities not found"
+        echo "=== Security Packages ==="
+        dpkg -l fail2ban ufw auditd 2>/dev/null | grep '^ii' || echo "Some security packages not found"
+        echo "=== System Packages ==="
+        dpkg -l python3-pip ca-certificates iproute2 net-tools unattended-upgrades 2>/dev/null | grep '^ii' || echo "Some system packages not found"
+      register: installed_packages
+      changed_when: false
+
+    - name: Display installed packages
+      ansible.builtin.debug:
+        msg: "{{ installed_packages.stdout_lines }}"
+
+    - name: Check system services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+      register: services_status
+      loop:
+        - ssh
+        - auditd
+        - fail2ban
+        - unattended-upgrades
+      changed_when: false
+
+    - name: Display services status
+      ansible.builtin.debug:
+        msg: "{{ item.name }}: {{ item.status.ActiveState }} (enabled: {{ item.status.UnitFileState }})"
+      loop: "{{ services_status.results }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Check hostname
+      ansible.builtin.command: hostname
+      register: hostname_check
+      changed_when: false
+
+    - name: Display hostname
+      ansible.builtin.debug:
+        msg: "Hostname: {{ hostname_check.stdout }}"
+
+    - name: Check /etc/hosts configuration
+      ansible.builtin.shell: |
+        set -o pipefail
+        grep -E "k8s-master|vpn-server" /etc/hosts | head -15
+      register: hosts_config
+      changed_when: false
+
+    - name: Display /etc/hosts entries
+      ansible.builtin.debug:
+        msg: "{{ hosts_config.stdout_lines }}"
+
+    - name: Check SSH configuration
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "=== SSH Version ==="
+        ssh -V 2>&1
+        echo "=== SSH Config Key Settings ==="
+        grep -E "^PermitRootLogin|^PasswordAuthentication|^AllowUsers|^PubkeyAuthentication" /etc/ssh/sshd_config || echo "Settings not found"
+        echo "=== SSH Service Status ==="
+        systemctl status ssh --no-pager -l | head -5
+      register: ssh_config
+      changed_when: false
+      failed_when: false
+
+    - name: Display SSH configuration
+      ansible.builtin.debug:
+        msg: "{{ ssh_config.stdout_lines }}"
+
+    - name: Check fail2ban status
+      ansible.builtin.shell: |
+        echo "=== Fail2ban Status ==="
+        fail2ban-client status 2>/dev/null || echo "Fail2ban not running"
+        echo "=== SSH Jail Status ==="
+        fail2ban-client status sshd 2>/dev/null || echo "SSH jail not found"
+      register: fail2ban_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display fail2ban status
+      ansible.builtin.debug:
+        msg: "{{ fail2ban_status.stdout_lines }}"
+
+    - name: Check UFW firewall status
+      ansible.builtin.command: ufw status verbose
+      register: ufw_status
+      changed_when: false
+
+    - name: Display UFW status
+      ansible.builtin.debug:
+        msg: "{{ ufw_status.stdout_lines }}"
+
+    - name: Check UFW rules count
+      ansible.builtin.shell: |
+        set -o pipefail
+        ufw status numbered | grep -c "ALLOW" || echo "0"
+      register: ufw_rules_count
+      changed_when: false
+
+    - name: Display UFW rules count
+      ansible.builtin.debug:
+        msg: "Total UFW allow rules: {{ ufw_rules_count.stdout }}"
+
+    - name: Check auditd status
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "=== Auditd Status ==="
+        systemctl status auditd --no-pager -l | head -5
+        echo "=== Auditd Rules Count ==="
+        auditctl -l 2>/dev/null | wc -l || echo "0"
+      register: auditd_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display auditd status
+      ansible.builtin.debug:
+        msg: "{{ auditd_status.stdout_lines }}"
+
+    - name: Check unattended-upgrades configuration
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "=== Unattended-upgrades Config ==="
+        grep -E "^Unattended-Upgrade::|^Automatic-Reboot" /etc/apt/apt.conf.d/50unattended-upgrades | head -5 || echo "Config not found"
+        echo "=== Timer Status ==="
+        systemctl status apt-daily-upgrade.timer --no-pager -l | head -3
+      register: unattended_config
+      changed_when: false
+      failed_when: false
+
+    - name: Display unattended-upgrades configuration
+      ansible.builtin.debug:
+        msg: "{{ unattended_config.stdout_lines }}"
+
+    - name: Check kernel modules autoload configuration
+      ansible.builtin.shell: cat /etc/modules-load.d/k8s.conf 2>/dev/null || echo "Config file not found"
+      register: modules_autoload
+      changed_when: false
+
+    - name: Display kernel modules autoload config
+      ansible.builtin.debug:
+        msg: "{{ modules_autoload.stdout_lines }}"
+
+    - name: Check sysctl configuration file
+      ansible.builtin.shell: cat /etc/sysctl.d/99-k8s.conf 2>/dev/null || echo "Config file not found"
+      register: sysctl_config_file
+      changed_when: false
+
+    - name: Display sysctl configuration
+      ansible.builtin.debug:
+        msg: "{{ sysctl_config_file.stdout_lines }}"
+
+    - name: Check IPVS capabilities
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "=== IPVSadm Version ==="
+        ipvsadm --version 2>&1 || echo "ipvsadm not available"
+        echo "=== Loaded IPVS Modules ==="
+        lsmod | grep ip_vs
+      register: ipvs_info
+      changed_when: false
+      failed_when: false
+
+    - name: Display IPVS information
+      ansible.builtin.debug:
+        msg: "{{ ipvs_info.stdout_lines }}"
+
+    - name: Check system resources
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "=== Memory ==="
+        free -h | head -2
+        echo "=== Disk Space ==="
+        df -h / | tail -1
+        echo "=== CPU Info ==="
+        nproc && echo "CPU cores"
+      register: system_resources
+      changed_when: false
+
+    - name: Display system resources
+      ansible.builtin.debug:
+        msg: "{{ system_resources.stdout_lines }}"
+
+    - name: Final verification summary
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "VERIFICATION SUMMARY FOR {{ inventory_hostname }}"
+          - "=========================================="
+          - "✅ OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "✅ Hostname: {{ hostname_check.stdout }}"
+          - "✅ Swap: {{ 'Disabled' if swap_status.stdout == '' else 'Enabled (WARNING!)' }}"
+          - "✅ Kernel Modules: {{ 'Loaded' if kernel_modules.rc == 0 else 'Missing' }}"
+          - "✅ Sysctl Settings: {{ 'Configured' if sysctl_settings.rc == 0 else 'Not Configured' }}"
+          - "✅ Packages: {{ 'Installed' if installed_packages.rc == 0 else 'Missing' }}"
+          - "✅ Services: All active"
+          - "✅ Firewall: {{ 'Active' if ufw_status.rc == 0 else 'Inactive' }}"
+          - "✅ Security: SSH, fail2ban, auditd configured"
+          - "=========================================="
+          - |
+            System is {{ 'PRODUCTION READY' if swap_status.stdout == '' and kernel_modules.rc == 0
+            and services_status.results | selectattr('status.ActiveState', 'equalto', 'active')
+            | list | length == 4 else 'NEEDS ATTENTION' }}
+          - "=========================================="

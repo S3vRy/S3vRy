@@ -1,0 +1,112 @@
+---
+- name: Update apt cache
+  apt:
+    update_cache: true
+    cache_valid_time: 3600
+  register: apt_update
+  changed_when: apt_update.cache_updated | default(false)
+
+- name: Upgrade all packages
+  apt:
+    upgrade: dist
+    autoremove: true
+    autoclean: true
+  register: apt_upgrade
+  changed_when: apt_upgrade.changed
+
+- name: Install unattended-upgrades
+  apt:
+    name:
+      - unattended-upgrades
+    state: present
+    update_cache: false
+
+- name: Configure unattended-upgrades
+  template:
+    src: templates/50unattended-upgrades.j2
+    dest: /etc/apt/apt.conf.d/50unattended-upgrades
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart unattended-upgrades
+
+- name: Enable unattended-upgrades timer
+  systemd:
+    name: apt-daily-upgrade.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Enable unattended-upgrades service
+  systemd:
+    name: unattended-upgrades
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Verify unattended-upgrades is enabled
+  command: systemctl is-enabled unattended-upgrades
+  register: unattended_upgrades_status
+  changed_when: false
+
+- name: Assert unattended-upgrades is enabled
+  assert:
+    that:
+      - unattended_upgrades_status.stdout == "enabled"
+    fail_msg: "unattended-upgrades is not enabled"
+    success_msg: "unattended-upgrades is enabled"
+
+- name: Install auditd
+  apt:
+    name:
+      - auditd
+    state: present
+    update_cache: false
+
+- name: Enable and start auditd
+  systemd:
+    name: auditd
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Verify auditd is running
+  command: systemctl is-active auditd
+  register: auditd_status
+  changed_when: false
+
+- name: Assert auditd is running
+  assert:
+    that:
+      - auditd_status.stdout == "active"
+    fail_msg: "auditd is not running"
+    success_msg: "auditd is running"
+
+- name: Configure bash history limits
+  lineinfile:
+    path: /etc/bash.bashrc
+    line: "{{ item }}"
+    create: true
+  loop:
+    - "export HISTSIZE=10000"
+    - "export HISTFILESIZE=20000"
+    - "export HISTCONTROL=ignoredups:erasedups"
+    - "export HISTTIMEFORMAT='%Y-%m-%d %H:%M:%S '"
+    - "shopt -s histappend"
+
+- name: Configure sudo audit logging
+  lineinfile:
+    path: /etc/sudoers
+    line: "Defaults logfile=/var/log/sudo.log"
+    validate: /usr/sbin/visudo -cf %s
+    state: present
+    create: true
+
+- name: Create sudo log file
+  file:
+    path: /var/log/sudo.log
+    state: touch
+    owner: root
+    group: root
+    mode: '0600'
+

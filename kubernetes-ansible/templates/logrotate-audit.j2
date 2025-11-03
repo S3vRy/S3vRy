@@ -1,0 +1,13 @@
+/var/log/audit/*.log {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    postrotate
+        /bin/systemctl reload auditd.service > /dev/null 2>&1 || true
+    endscript
+}
+

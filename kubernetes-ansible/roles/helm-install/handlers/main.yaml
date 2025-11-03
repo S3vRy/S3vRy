@@ -1,0 +1,5 @@
+---
+- name: Verify helm
+  ansible.builtin.command: helm version --short
+  register: helm_verify
+  changed_when: false

@@ -1,0 +1,47 @@
+---
+# Kubernetes API Server Audit Policy
+# Place this file at /etc/kubernetes/audit-policy.yaml
+# Reference: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+  # Don't log read-only requests
+  - level: None
+    verbs: ["get", "list", "watch"]
+
+  # Don't log authenticated requests to certain non-resource URL paths
+  - level: None
+    nonResourceURLs:
+      - "/api*"
+      - "/healthz*"
+      - "/version"
+      - "/swagger*"
+
+  # Log all requests at the Metadata level
+  - level: Metadata
+    omitStages:
+      - "RequestReceived"
+
+  # Log changes at RequestResponse level
+  - level: RequestResponse
+    verbs: ["create", "update", "patch", "delete"]
+    resources:
+      - group: ""
+      - group: "apps"
+      - group: "extensions"
+
+  # Log pod exec and attach at RequestResponse level
+  - level: RequestResponse
+    verbs: ["create"]
+    resources:
+      - group: ""
+        resources: ["pods/exec", "pods/attach"]
+
+  # Log secrets and configmaps changes at RequestResponse level
+  - level: RequestResponse
+    verbs: ["create", "update", "patch"]
+    resources:
+      - group: ""
+        resources: ["secrets", "configmaps"]
+

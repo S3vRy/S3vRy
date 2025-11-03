@@ -1,0 +1,166 @@
+---
+# ============================================================================
+# IPVS Masquerade and FORWARD Rules for Pod Network
+# ============================================================================
+# CRITICAL rules for cluster operation with IPVS:
+# - MASQUERADE rules for pod network HTTP/HTTPS egress
+# - FORWARD rules for DNS and Kubernetes API
+# These rules are REQUIRED immediately after Cilium installation for cluster operation
+# ============================================================================
+
+- name: Install iptables-persistent to save rules
+  ansible.builtin.apt:
+    name: iptables-persistent
+    state: present
+    update_cache: false
+  register: install_iptables_persistent
+  changed_when: install_iptables_persistent.changed
+
+- name: Check if MASQUERADE rule for pod network HTTPS exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    iptables -t nat -C POSTROUTING -s {{ pod_network_cidr }} ! -d {{ pod_network_cidr }} -p tcp --dport 443 -j MASQUERADE 2>&1
+  register: check_https_masq
+  changed_when: false
+  failed_when: false
+
+- name: Add MASQUERADE rule for pod network HTTPS (443/tcp)
+  ansible.builtin.shell: |
+    iptables -t nat -I POSTROUTING -s {{ pod_network_cidr }} ! -d {{ pod_network_cidr }} -p tcp --dport 443 -j MASQUERADE
+  when: check_https_masq.rc != 0
+  register: add_https_masq
+  changed_when: check_https_masq.rc != 0
+  failed_when: false
+
+- name: Check if MASQUERADE rule for pod network HTTP exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    iptables -t nat -C POSTROUTING -s {{ pod_network_cidr }} ! -d {{ pod_network_cidr }} -p tcp --dport 80 -j MASQUERADE 2>&1
+  register: check_http_masq
+  changed_when: false
+  failed_when: false
+
+- name: Add MASQUERADE rule for pod network HTTP (80/tcp)
+  ansible.builtin.shell: |
+    iptables -t nat -I POSTROUTING -s {{ pod_network_cidr }} ! -d {{ pod_network_cidr }} -p tcp --dport 80 -j MASQUERADE
+  when: check_http_masq.rc != 0
+  register: add_http_masq
+  changed_when: check_http_masq.rc != 0
+  failed_when: false
+
+- name: Check if FORWARD rule for pod to service network DNS (UDP) exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    iptables -C FORWARD -s {{ pod_network_cidr }} -d {{ service_network_cidr }} -p udp --dport 53 -j ACCEPT 2>&1
+  register: check_dns_forward_udp
+  changed_when: false
+  failed_when: false
+
+- name: Add FORWARD rule for pod to service network DNS (UDP)
+  ansible.builtin.shell: |
+    iptables -I FORWARD -s {{ pod_network_cidr }} -d {{ service_network_cidr }} -p udp --dport 53 -j ACCEPT
+  when: check_dns_forward_udp.rc != 0
+  register: add_dns_forward_udp
+  changed_when: check_dns_forward_udp.rc != 0
+  failed_when: false
+
+- name: Check if FORWARD rule for pod to service network DNS (TCP) exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    iptables -C FORWARD -s {{ pod_network_cidr }} -d {{ service_network_cidr }} -p tcp --dport 53 -j ACCEPT 2>&1
+  register: check_dns_forward_tcp
+  changed_when: false
+  failed_when: false
+
+- name: Add FORWARD rule for pod to service network DNS (TCP)
+  ansible.builtin.shell: |
+    iptables -I FORWARD -s {{ pod_network_cidr }} -d {{ service_network_cidr }} -p tcp --dport 53 -j ACCEPT
+  when: check_dns_forward_tcp.rc != 0
+  register: add_dns_forward_tcp
+  changed_when: check_dns_forward_tcp.rc != 0
+  failed_when: false
+
+- name: Check if FORWARD rule for pod network HTTPS exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    iptables -C FORWARD -s {{ pod_network_cidr }} -p tcp --dport 443 -j ACCEPT 2>&1
+  register: check_https_forward
+  changed_when: false
+  failed_when: false
+
+- name: Add FORWARD rule for pod network HTTPS (443/tcp)
+  ansible.builtin.shell: |
+    iptables -I FORWARD -s {{ pod_network_cidr }} -p tcp --dport 443 -j ACCEPT
+  when: check_https_forward.rc != 0
+  register: add_https_forward
+  changed_when: check_https_forward.rc != 0
+  failed_when: false
+
+- name: Check if FORWARD rule for pod network HTTP exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    iptables -C FORWARD -s {{ pod_network_cidr }} -p tcp --dport 80 -j ACCEPT 2>&1
+  register: check_http_forward
+  changed_when: false
+  failed_when: false
+
+- name: Add FORWARD rule for pod network HTTP (80/tcp)
+  ansible.builtin.shell: |
+    iptables -I FORWARD -s {{ pod_network_cidr }} -p tcp --dport 80 -j ACCEPT
+  when: check_http_forward.rc != 0
+  register: add_http_forward
+  changed_when: check_http_forward.rc != 0
+  failed_when: false
+
+- name: Check if FORWARD rule for pod to service network Kubernetes API exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    iptables -C FORWARD -s {{ pod_network_cidr }} -d {{ service_network_cidr }} -p tcp --dport 443 -j ACCEPT 2>&1
+  register: check_k8s_api_forward
+  changed_when: false
+  failed_when: false
+
+- name: Add FORWARD rule for pod to service network Kubernetes API (443/tcp)
+  ansible.builtin.shell: |
+    iptables -I FORWARD -s {{ pod_network_cidr }} -d {{ service_network_cidr }} -p tcp --dport 443 -j ACCEPT
+  when: check_k8s_api_forward.rc != 0
+  register: add_k8s_api_forward
+  changed_when: check_k8s_api_forward.rc != 0
+  failed_when: false
+
+- name: Check if MASQUERADE rule for pod to service network Kubernetes API exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    iptables -t nat -C POSTROUTING -s {{ pod_network_cidr }} -d {{ service_network_cidr }} -p tcp --dport 443 -j MASQUERADE 2>&1
+  register: check_k8s_api_masq
+  changed_when: false
+  failed_when: false
+
+- name: Add MASQUERADE rule for pod to service network Kubernetes API (443/tcp)
+  ansible.builtin.shell: |
+    iptables -t nat -I POSTROUTING -s {{ pod_network_cidr }} -d {{ service_network_cidr }} -p tcp --dport 443 -j MASQUERADE
+  when: check_k8s_api_masq.rc != 0
+  register: add_k8s_api_masq
+  changed_when: check_k8s_api_masq.rc != 0
+  failed_when: false
+
+- name: Save iptables rules to persist after reboot
+  ansible.builtin.shell: |
+    mkdir -p /etc/iptables
+    iptables-save > /etc/iptables/rules.v4
+    if command -v ip6tables >/dev/null 2>&1; then
+      ip6tables-save > /etc/iptables/rules.v6
+    fi
+  when:
+    - install_iptables_persistent.changed or
+      add_https_masq.changed | default(false) or
+      add_http_masq.changed | default(false) or
+      add_dns_forward_udp.changed | default(false) or
+      add_dns_forward_tcp.changed | default(false) or
+      add_https_forward.changed | default(false) or
+      add_http_forward.changed | default(false) or
+      add_k8s_api_forward.changed | default(false) or
+      add_k8s_api_masq.changed | default(false)
+  register: save_iptables_rules
+  changed_when: true
+  failed_when: false

@@ -1,0 +1,147 @@
+---
+# ============================================================================
+# Production Kubernetes Cluster Installation
+# ============================================================================
+# This playbook installs and configures a complete production-ready
+# Kubernetes cluster with IPVS, kube-vip HA, and Cilium CNI
+#
+# Prerequisites:
+#   1. Edit cluster-config.yml with your cluster settings
+#   2. Run: python3 generate-inventory.py (to generate inventory.yml)
+#   3. Ensure SSH keys are set up for passwordless access
+#
+# Usage:
+#   ansible-playbook site.yml                    # Full installation
+#   ansible-playbook site.yml --tags install     # Only install components
+#   ansible-playbook site.yml --tags init        # Only initialization
+#   ansible-playbook site.yml --tags join        # Only join nodes
+#   ansible-playbook site.yml --skip-tags verify # Without verification
+#
+# ============================================================================
+
+# Load cluster configuration
+- name: Load Cluster Configuration
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - cluster-config.yml
+  tasks:
+    - name: Verify cluster configuration is loaded
+      ansible.builtin.debug:
+        msg: "Cluster configuration loaded: {{ cluster_name }} ({{ cluster_environment }})"
+
+# ----------------------------------------------------------------------------
+# Stage 1: Install Kubernetes components on all master nodes
+# ----------------------------------------------------------------------------
+- name: Install Kubernetes Components
+  import_playbook: kubernetes-install.yml
+  vars_files:
+    - cluster-config.yml
+  tags:
+    - install
+    - components
+    - always
+
+# ----------------------------------------------------------------------------
+# Stage 2: Initialize cluster on first master (k8s-master-1)
+# ----------------------------------------------------------------------------
+- name: Initialize Kubernetes Cluster on First Master
+  import_playbook: kubernetes-init.yml
+  vars_files:
+    - cluster-config.yml
+  tags:
+    - init
+    - bootstrap
+    - always
+
+# ----------------------------------------------------------------------------
+# Stage 3: Join additional master nodes to the cluster
+# ----------------------------------------------------------------------------
+- name: Join Additional Master Nodes to Cluster
+  import_playbook: kubernetes-join-masters.yml
+  vars_files:
+    - cluster-config.yml
+  tags:
+    - join
+    - ha
+    - always
+  when: groups['k8s_masters'] | length > 1
+
+# ----------------------------------------------------------------------------
+# Stage 3.5: Apply IPVS rules and scale CoreDNS after all nodes joined
+# ----------------------------------------------------------------------------
+- name: Apply IPVS Rules on All Nodes
+  hosts: k8s_masters
+  become: true
+  gather_facts: false
+  vars_files:
+    - cluster-config.yml
+  tags:
+    - final-config
+    - always
+  tasks:
+    - name: Configure IPVS Masquerade and FORWARD rules
+      ansible.builtin.include_tasks: tasks/ipvs-masquerade-rules.yml
+
+- name: Final Cluster Configuration After All Nodes Joined
+  hosts: k8s_masters[0]
+  become: true
+  gather_facts: false
+  vars_files:
+    - cluster-config.yml
+  tags:
+    - final-config
+    - always
+  tasks:
+    - name: Wait for all nodes to be Ready
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl wait --for=condition=Ready nodes --all --timeout=300s
+      register: nodes_ready
+      retries: 30
+      delay: 10
+      failed_when: false
+      changed_when: false
+
+    - name: Wait for all kube-vip pods to be ready
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl wait --for=condition=ready pod -n kube-system -l app=kube-vip --timeout=300s
+      register: kube_vip_pods
+      retries: 30
+      delay: 10
+      failed_when: false
+      changed_when: false
+
+    - name: Wait for VIP to be accessible
+      ansible.builtin.wait_for:
+        port: 6443
+        host: "{{ kube_vip_vip }}"
+        delay: 30
+        timeout: 120
+      register: kube_vip_ready
+      failed_when: false
+      changed_when: false
+
+    - name: Check number of Ready nodes
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl get nodes --no-headers | grep -c Ready || echo "0"
+      register: ready_nodes_count
+      changed_when: false
+
+    - name: Scale CoreDNS to match number of nodes (1 per node)
+      ansible.builtin.include_tasks: tasks/scale-coredns.yml
+      when: ready_nodes_count.stdout | int >= 3
+
+# ----------------------------------------------------------------------------
+# Stage 4: Final cluster verification
+# ----------------------------------------------------------------------------
+- name: Verify Cluster Installation
+  import_playbook: verify-cluster.yml
+  vars_files:
+    - cluster-config.yml
+  tags:
+    - verify
+    - validation
+    - always

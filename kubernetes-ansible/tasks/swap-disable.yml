@@ -1,0 +1,40 @@
+---
+- name: Check current swap status
+  command: swapon --show
+  register: swap_status
+  changed_when: false
+  failed_when: false
+
+- name: Disable swap immediately
+  command: swapoff -a
+  when: swap_status.stdout != ""
+  register: swapoff_result
+  changed_when: swap_status.stdout != ""
+
+- name: Check for swap entries in /etc/fstab
+  command: grep -E "^[^#].*swap" /etc/fstab
+  register: fstab_swap
+  changed_when: false
+  failed_when: false
+
+- name: Comment out swap entries in /etc/fstab
+  replace:
+    path: /etc/fstab
+    regexp: '^([^#].*swap.*)$'
+    replace: '# \1'
+    backup: true
+  when: fstab_swap.rc == 0
+  register: fstab_modified
+
+- name: Verify swap is disabled
+  command: swapon --show
+  register: swap_check
+  changed_when: false
+
+- name: Assert swap is disabled
+  assert:
+    that:
+      - swap_check.stdout == ""
+    fail_msg: "Swap is still active: {{ swap_check.stdout }}"
+    success_msg: "Swap is disabled successfully"
+

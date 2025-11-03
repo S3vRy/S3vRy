@@ -1,0 +1,97 @@
+---
+- name: Check if containerd is installed
+  ansible.builtin.command: which containerd
+  register: containerd_check
+  changed_when: false
+  failed_when: false
+
+- name: Install containerd if not present
+  ansible.builtin.apt:
+    name: containerd
+    state: present
+    update_cache: true
+  when: containerd_check.rc != 0
+  register: containerd_install
+
+- name: Start and enable containerd service
+  ansible.builtin.systemd:
+    name: containerd
+    state: started
+    enabled: true
+    daemon_reload: true
+  register: containerd_start
+
+- name: Check containerd version
+  ansible.builtin.command: containerd --version
+  register: containerd_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Display containerd version
+  ansible.builtin.debug:
+    msg: "{{ containerd_version_check.stdout }}"
+
+- name: Create containerd config directory
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: '0755'
+
+- name: Backup existing containerd config
+  ansible.builtin.copy:
+    src: /etc/containerd/config.toml
+    dest: /etc/containerd/config.toml.backup
+    remote_src: true
+    mode: '0644'
+  when: ansible_facts.stat.exists.stat.exists | default(false)
+  failed_when: false
+
+- name: Generate containerd config
+  ansible.builtin.template:
+    src: config.toml.j2
+    dest: /etc/containerd/config.toml
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  notify: Restart containerd
+
+- name: Enable systemd cgroup driver
+  ansible.builtin.lineinfile:
+    path: /etc/containerd/config.toml
+    regexp: '^\s*SystemdCgroup\s*='
+    line: '            SystemdCgroup = true'
+    insertafter: '^\[plugins\."io\.containerd\.grpc\.v1\.cri"\.containerd\.runtimes\.runc\.options\]'
+    state: present
+  notify: Restart containerd
+
+- name: Verify containerd config syntax
+  ansible.builtin.command: containerd config default
+  register: containerd_config_test
+  changed_when: false
+  failed_when: false
+
+- name: Restart containerd
+  ansible.builtin.systemd:
+    name: containerd
+    state: restarted
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for containerd to be ready
+  ansible.builtin.wait_for:
+    path: "/run/containerd/containerd.sock"
+    timeout: 30
+  register: containerd_ready
+
+- name: Verify containerd is running
+  ansible.builtin.systemd:
+    name: containerd
+  register: containerd_status
+
+- name: Assert containerd is running
+  ansible.builtin.assert:
+    that:
+      - containerd_status.status.ActiveState == "active"
+    fail_msg: "containerd is not running"
+    success_msg: "containerd is running and configured"

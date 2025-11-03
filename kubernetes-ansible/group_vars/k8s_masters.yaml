@@ -1,0 +1,39 @@
+---
+# ============================================================================
+# Kubernetes Master Nodes Configuration
+# ============================================================================
+# This file uses variables from cluster-config.yml
+# Edit cluster-config.yml to change these values
+# ============================================================================
+
+# First master node (automatically derived from masters list in cluster-config.yml)
+first_master: "{{ groups['k8s_masters'][0] }}"
+first_master_ip: "{{ hostvars[groups['k8s_masters'][0]]['ansible_host'] }}"
+
+# Master node labels
+master_labels:
+  node-role.kubernetes.io/control-plane: ""
+  node-role.kubernetes.io/master: ""
+
+# Master node taints (optional - production may want to allow pods on masters)
+# In this configuration, we remove NoSchedule taints to allow pods on masters
+master_taints: []
+
+# API server extra args
+# Note: Audit policy will be configured after cluster initialization
+# because static pods need proper volume mounts for hostPath access
+apiserver_extra_args:
+  authorization-mode: "Node,RBAC"
+
+# Controller manager extra args
+controller_manager_extra_args:
+  bind-address: "0.0.0.0"
+
+# Scheduler extra args
+scheduler_extra_args:
+  bind-address: "0.0.0.0"
+
+# Kubelet extra args
+kubelet_extra_args:
+  cgroup-driver: "systemd"
+  fail-swap-on: "true"

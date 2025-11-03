@@ -1,0 +1,178 @@
+---
+# ============================================================================
+# Join Additional Master Nodes to Kubernetes Cluster
+# ============================================================================
+# Joins additional master nodes to the existing cluster:
+# - Get join token and certificate key
+# - Copy kubeconfig
+# - kubeadm join as control plane
+# - Install kube-vip on new node
+#
+# Tags: join, ha
+# ============================================================================
+
+- name: Join Additional Master Nodes to Cluster
+  hosts: k8s_masters[1:]
+  become: true
+  gather_facts: true
+  serial: 1
+  tags:
+    - join
+    - ha
+
+  vars:
+    first_master_host: "{{ groups['k8s_masters'][0] }}"
+
+  tasks:
+    - name: Set first master fact
+      ansible.builtin.set_fact:
+        first_master: "{{ groups['k8s_masters'][0] }}"
+
+    - name: Load required kernel modules for sysctl
+      ansible.builtin.command: modprobe {{ item }}
+      loop:
+        - br_netfilter
+        - nf_conntrack
+      changed_when: false
+      failed_when: false
+
+    - name: Apply critical sysctl settings for Kubernetes
+      ansible.builtin.command: sysctl -w {{ item.key }}={{ item.value }}
+      loop: "{{ k8s_sysctl_settings | dict2items }}"
+      register: sysctl_result
+      changed_when: false
+      failed_when: false
+
+    - name: Reset any existing kubeadm state on additional masters
+      ansible.builtin.shell: kubeadm reset -f || true
+      register: kubeadm_reset
+      changed_when: false
+      failed_when: false
+
+    - name: Install kube-vip on additional masters (AFTER reset, BEFORE join)
+      ansible.builtin.include_role:
+        name: kube-vip-setup
+
+    - name: Get join command from first master
+      ansible.builtin.command: kubeadm token create --print-join-command
+      delegate_to: "{{ first_master }}"
+      register: join_token_cmd
+      changed_when: true
+
+    - name: Get certificate key from first master (re-upload if needed)
+      ansible.builtin.shell: |
+        set -o pipefail
+        # Always re-upload certificates to get a fresh key
+        # This is necessary because certificate key is valid only for single use
+        kubeadm init phase upload-certs --upload-certs 2>&1 | grep -E '^[a-f0-9]{64}$' | head -1
+      delegate_to: "{{ first_master }}"
+      register: cert_key_cmd
+      changed_when: true
+      failed_when: cert_key_cmd.rc != 0 or cert_key_cmd.stdout == ""
+
+    - name: Build full join command
+      ansible.builtin.set_fact:
+        full_join_command: "{{ join_token_cmd.stdout }} --control-plane --certificate-key {{ cert_key_cmd.stdout }}"
+
+    - name: Copy kubeconfig from first master
+      ansible.builtin.fetch:
+        src: /root/.kube/config
+        dest: /tmp/kubeconfig-{{ inventory_hostname }}
+        flat: true
+      delegate_to: "{{ hostvars[first_master].inventory_hostname }}"
+
+    - name: Create kubeconfig directory
+      ansible.builtin.file:
+        path: /root/.kube
+        state: directory
+        mode: '0755'
+
+    - name: Copy kubeconfig to node
+      ansible.builtin.copy:
+        src: "/tmp/kubeconfig-{{ inventory_hostname }}"
+        dest: /root/.kube/config
+        mode: '0600'
+
+    - name: Join node to cluster as control plane
+      ansible.builtin.command: "{{ full_join_command }}"
+      register: join_result
+      async: 900
+      poll: 15
+      changed_when: true
+
+    - name: Wait for join to complete
+      ansible.builtin.async_status:
+        jid: "{{ join_result.ansible_job_id }}"
+      register: join_status
+      until: join_status.finished == 1
+      retries: 60
+      delay: 15
+      ignore_errors: true
+      changed_when: false
+
+    - name: Check if node joined successfully
+      ansible.builtin.command: kubectl get node {{ inventory_hostname }}
+      delegate_to: "{{ hostvars[first_master].inventory_hostname }}"
+      register: node_check
+      changed_when: false
+      failed_when: false
+      retries: 10
+      delay: 10
+
+    - name: Verify join result
+      ansible.builtin.assert:
+        that:
+          - node_check.rc == 0
+        fail_msg: "Node {{ inventory_hostname }} did not join successfully"
+        success_msg: "Node {{ inventory_hostname }} joined successfully"
+
+    - name: Verify node joined successfully
+      ansible.builtin.command: kubectl get nodes -o wide
+      delegate_to: "{{ hostvars[first_master].inventory_hostname }}"
+      register: nodes_list
+      changed_when: false
+
+    - name: Display nodes
+      ansible.builtin.debug:
+        msg: "{{ nodes_list.stdout_lines }}"
+
+    - name: Wait for node to be Ready
+      ansible.builtin.command: kubectl wait --for=condition=Ready node/{{ inventory_hostname }} --timeout=300s
+      delegate_to: "{{ hostvars[first_master].inventory_hostname }}"
+      register: node_ready
+      retries: 30
+      delay: 10
+      changed_when: false
+      failed_when: false
+
+    - name: Wait for control plane pods to be running on joined node
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl wait --for=condition=ready pod -l tier=control-plane \
+          -n kube-system --field-selector spec.nodeName={{ inventory_hostname }} \
+          --timeout=120s || true
+      delegate_to: "{{ hostvars[first_master].inventory_hostname }}"
+      register: control_plane_pods_ready
+      retries: 20
+      delay: 5
+      changed_when: false
+      failed_when: false
+
+    - name: Remove NoSchedule taint and add worker role (make master schedulable)
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl taint nodes {{ inventory_hostname }} node-role.kubernetes.io/control-plane:NoSchedule- || true
+        kubectl taint nodes {{ inventory_hostname }} node-role.kubernetes.io/master:NoSchedule- || true
+        kubectl label node {{ inventory_hostname }} node-role.kubernetes.io/worker=worker --overwrite || true
+      delegate_to: "{{ hostvars[first_master].inventory_hostname }}"
+      register: node_config
+      changed_when: true
+
+    - name: Join summary
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "{{ inventory_hostname }} joined cluster successfully"
+          - "Node IP: {{ ansible_default_ipv4.address }}"
+          - "Roles: control-plane,worker"
+          - "=========================================="
