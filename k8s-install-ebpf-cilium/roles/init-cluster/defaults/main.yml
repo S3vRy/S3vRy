@@ -1,0 +1,16 @@
+---
+# Defaults for init-cluster role
+# ALL values must be defined in group_vars/all.yml
+# This file is kept for variable structure documentation
+
+# Variables used by this role:
+# - kubernetes_version
+# - control_plane_endpoint
+# - pod_subnet
+# - service_subnet
+# - k8s_master_1_ip
+# - k8s_master_2_ip
+# - k8s_master_3_ip
+# - kubeadm_config_path
+# - kubeconfig_path
+# - project_root

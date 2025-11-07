@@ -1,0 +1,98 @@
+---
+# ============================================
+# MAIN CONFIGURATION FILE
+# ============================================
+# All IP addresses and component versions are managed here
+# Only modify this file to configure the cluster
+
+# ============================================
+# NODE ADDRESSES
+# ============================================
+# IMPORTANT: Replace the following IP addresses with your actual node IPs
+# These IPs must be publicly accessible or reachable from your Ansible control node
+
+k8s_master_1_ip: "YOUR_MASTER_1_IP"  # Replace with your first master node IP address
+k8s_master_1_hostname: "k8s-master-1"
+
+k8s_master_2_ip: "YOUR_MASTER_2_IP"  # Replace with your second master node IP address
+k8s_master_2_hostname: "k8s-master-2"
+
+k8s_master_3_ip: "YOUR_MASTER_3_IP"  # Replace with your third master node IP address
+k8s_master_3_hostname: "k8s-master-3"
+
+# Kubernetes API port
+k8s_api_port: "6443"
+
+# Control Plane Endpoint
+control_plane_endpoint: "{{ k8s_master_1_ip }}:{{ k8s_api_port }}"
+
+# ============================================
+# COMPONENT VERSIONS
+# ============================================
+kubernetes_version: "1.34.1"
+containerd_version: "2.1.4"
+cni_plugins_version: "v1.3.0"
+runc_version: "v1.2.0"
+cilium_version: "1.18.3"
+cilium_cli_version: "0.16.21"
+gateway_api_version: "v1.3.0"
+
+# ============================================
+# NETWORK SETTINGS
+# ============================================
+pod_subnet: "10.244.0.0/16"
+service_subnet: "10.96.0.0/12"
+
+# ============================================
+# CILIUM SETTINGS
+# ============================================
+cilium_k8s_service_host: "{{ k8s_master_1_ip }}"
+cilium_k8s_service_port: "{{ k8s_api_port }}"
+
+# IP Pool for LoadBalancer
+cilium_lb_ippool:
+  - cidr: "{{ k8s_master_1_ip }}/32"
+  - cidr: "{{ k8s_master_2_ip }}/32"
+  - cidr: "{{ k8s_master_3_ip }}/32"
+
+# L2 Announcement Policy
+cilium_l2_policy_interfaces:
+  - eth0
+
+# ============================================
+# GATEWAY API SETTINGS
+# ============================================
+gateway_namespace: "gateway-system"
+gateway_name: "main-gateway"
+gateway_class_name: "cilium"
+
+# ============================================
+# PATHS AND DIRECTORIES
+# ============================================
+project_root: "/root/k8s-setup"
+kubeadm_config_path: "/root/kubeadm-config.yaml"
+kubeconfig_path: "{{ ansible_env.HOME }}/.kube/config"
+
+# ============================================
+# NODE SETTINGS
+# ============================================
+node_roles:
+  - control-plane
+  - worker
+
+node_taint_prefer_no_schedule: true
+
+# ============================================
+# ANSIBLE SETTINGS
+# ============================================
+ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+ansible_python_interpreter: auto_silent
+
+# ============================================
+# SYSTEM CHECKS
+# ============================================
+system_requirements:
+  min_memory_gb: 2
+  min_disk_gb: 20
+  min_kernel_version: "5.10"
+  required_debian_version: 12

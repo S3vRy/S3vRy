@@ -1,0 +1,45 @@
+---
+# Cilium LoadBalancer configuration
+
+- name: Create CiliumLoadBalancerIPPool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2alpha1
+      kind: CiliumLoadBalancerIPPool
+      metadata:
+        name: main-pool
+      spec:
+        blocks: "{{ cilium_lb_ippool }}"
+
+- name: Create CiliumL2AnnouncementPolicy
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2alpha1
+      kind: CiliumL2AnnouncementPolicy
+      metadata:
+        name: l2-policy
+      spec:
+        serviceSelector:
+          matchLabels:
+            io.cilium/lb-ipam-layer2: "true"
+        interfaces: "{{ cilium_l2_policy_interfaces }}"
+        externalIPs: true
+        loadBalancerIPs: true
+
+- name: Verify created resources
+  kubernetes.core.k8s_info:
+    api_version: "{{ item.api }}"
+    kind: "{{ item.kind }}"
+  register: lb_resources
+  loop:
+    - api: cilium.io/v2alpha1
+      kind: CiliumLoadBalancerIPPool
+    - api: cilium.io/v2alpha1
+      kind: CiliumL2AnnouncementPolicy
+
+- name: Display resources
+  ansible.builtin.debug:
+    msg: "{{ item.resources | map(attribute='metadata.name') | list }}"
+  loop: "{{ lb_resources.results }}"

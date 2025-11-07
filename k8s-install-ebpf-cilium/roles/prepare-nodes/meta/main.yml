@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  author: Meerkat Infrastructure
+  description: Node preparation for Kubernetes (containerd, kubelet, kubeadm, kubectl)
+  license: MIT
+  min_ansible_version: "2.12"
+  platforms:
+    - name: Debian
+      versions:
+        - "12"
+        - "13"
+  galaxy_tags:
+    - kubernetes
+    - containerd
+    - kubelet
+    - kubeadm
+
+dependencies: []

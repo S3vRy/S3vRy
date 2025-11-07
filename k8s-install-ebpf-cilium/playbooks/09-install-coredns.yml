@@ -1,0 +1,15 @@
+---
+# CoreDNS installation after all nodes are connected and CNI is installed
+
+- name: CoreDNS installation
+  hosts: k8s-master-1
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  vars:
+    kubeadm_config_path: "{{ kubeadm_config_path | default('/root/kubeadm-config.yaml') }}"
+
+  roles:
+    - install-coredns
+

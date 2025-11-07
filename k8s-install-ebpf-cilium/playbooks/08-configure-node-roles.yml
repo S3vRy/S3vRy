@@ -1,0 +1,13 @@
+---
+# Playbook for node roles configuration
+
+- name: Node roles and taints configuration
+  hosts: k8s-master-1
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - configure-node-roles
+

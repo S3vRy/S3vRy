@@ -1,0 +1,40 @@
+---
+# Inventory file for Kubernetes cluster
+#
+# IMPORTANT: IP addresses here must match group_vars/all.yml
+# When changing IP in group_vars/all.yml, be sure to update this file!
+#
+# IP addresses are taken from variables:
+# - k8s_master_1_ip
+# - k8s_master_2_ip
+# - k8s_master_3_ip
+# - k8s_master_1_hostname
+# - k8s_master_2_hostname
+# - k8s_master_3_hostname
+#
+# NOTE: Replace YOUR_MASTER_X_IP with your actual IP addresses from group_vars/all.yml
+
+all:
+  children:
+    k8s_cluster:
+      children:
+        k8s_masters:
+          hosts:
+            k8s-master-1:
+              ansible_host: "YOUR_MASTER_1_IP"  # Replace with your first master node IP (must match k8s_master_1_ip from group_vars/all.yml)
+              ansible_user: root
+              node_ip: "YOUR_MASTER_1_IP"       # Replace with your first master node IP (must match k8s_master_1_ip from group_vars/all.yml)
+              node_hostname: "k8s-master-1"     # Must match k8s_master_1_hostname from group_vars/all.yml
+              is_first_master: true
+            k8s-master-2:
+              ansible_host: "YOUR_MASTER_2_IP"  # Replace with your second master node IP (must match k8s_master_2_ip from group_vars/all.yml)
+              ansible_user: root
+              node_ip: "YOUR_MASTER_2_IP"       # Replace with your second master node IP (must match k8s_master_2_ip from group_vars/all.yml)
+              node_hostname: "k8s-master-2"     # Must match k8s_master_2_hostname from group_vars/all.yml
+              is_first_master: false
+            k8s-master-3:
+              ansible_host: "YOUR_MASTER_3_IP"  # Replace with your third master node IP (must match k8s_master_3_ip from group_vars/all.yml)
+              ansible_user: root
+              node_ip: "YOUR_MASTER_3_IP"       # Replace with your third master node IP (must match k8s_master_3_ip from group_vars/all.yml)
+              node_hostname: "k8s-master-3"     # Must match k8s_master_3_hostname from group_vars/all.yml
+              is_first_master: false

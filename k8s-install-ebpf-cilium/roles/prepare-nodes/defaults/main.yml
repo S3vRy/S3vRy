@@ -1,0 +1,10 @@
+---
+# Defaults for prepare-nodes role
+# ALL values must be defined in group_vars/all.yml
+# This file is kept for variable structure documentation
+
+# Variables used by this role:
+# - containerd_version
+# - kubernetes_version
+# - cni_plugins_version
+# - runc_version

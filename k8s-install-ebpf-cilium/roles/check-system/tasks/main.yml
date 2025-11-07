@@ -1,0 +1,108 @@
+---
+# System checks before Kubernetes installation
+
+- name: Check root privileges
+  ansible.builtin.assert:
+    that:
+      - ansible_user == "root" or ansible_become | bool
+    fail_msg: "Script must be run as root or with sudo"
+    success_msg: "Root privileges: OK"
+
+- name: Gather system information
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - "distribution"
+      - "kernel"
+      - "hardware"
+      - "system"
+
+- name: Check Debian
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == "Debian"
+      - ansible_distribution_major_version | int >= system_requirements.required_debian_version | int
+    fail_msg: "Debian {{ system_requirements.required_debian_version }} or higher required. Detected: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+    success_msg: "Debian {{ ansible_distribution_version }} detected"
+
+- name: Check kernel version
+  ansible.builtin.assert:
+    that:
+      - (ansible_kernel.split('.')[0] | int) >= (system_requirements.min_kernel_version.split('.')[0] | int)
+      - (ansible_kernel.split('.')[0] | int) > (system_requirements.min_kernel_version.split('.')[0] | int) or (ansible_kernel.split('.')[1] | int) >= (system_requirements.min_kernel_version.split('.')[1] | int)
+    fail_msg: "Kernel {{ system_requirements.min_kernel_version }} or higher required. Detected: {{ ansible_kernel }}"
+    success_msg: "Kernel version: {{ ansible_kernel }} (>= {{ system_requirements.min_kernel_version }})"
+
+- name: Check memory
+  ansible.builtin.assert:
+    that:
+      - ansible_memtotal_mb | int >= (system_requirements.min_memory_gb | int * 1024)
+    fail_msg: "Minimum {{ system_requirements.min_memory_gb }}GB memory required. Detected: {{ (ansible_memtotal_mb / 1024) | round(2) }}GB"
+    success_msg: "Memory: {{ (ansible_memtotal_mb / 1024) | round(2) }}GB"
+
+- name: Check disk space
+  ansible.builtin.assert:
+    that:
+      - ansible_mounts | selectattr('mount', 'equalto', '/') | map(attribute='size_available') | first | int >= (system_requirements.min_disk_gb | int * 1073741824)
+    fail_msg: "Minimum {{ system_requirements.min_disk_gb }}GB free space required"
+    success_msg: "Disk free space: OK"
+
+- name: Check network interfaces
+  ansible.builtin.assert:
+    that:
+      - ansible_interfaces | length > 0
+    fail_msg: "Network interfaces not found"
+    success_msg: "Network interfaces: OK"
+
+- name: Check required commands
+  ansible.builtin.command:
+    cmd: "{{ item }}"
+  register: command_check
+  failed_when: false
+  changed_when: false
+  loop:
+    - curl
+    - wget
+    - gpg
+    - systemctl
+
+- name: Display command check results
+  ansible.builtin.debug:
+    msg: "Command {{ item.item }}: {{ 'available' if item.rc == 0 else 'not found (will be installed)' }}"
+  loop: "{{ command_check.results }}"
+
+- name: Check systemd
+  ansible.builtin.command:
+    cmd: systemctl --version
+  register: systemd_check
+  changed_when: false
+  failed_when: false
+
+- name: Verify systemd availability
+  ansible.builtin.assert:
+    that:
+      - systemd_check.rc == 0
+    fail_msg: "systemd not available (required for Kubernetes)"
+    success_msg: "systemd available"
+
+- name: Check existing Kubernetes components
+  ansible.builtin.command:
+    cmd: "{{ item }} --version"
+  register: k8s_check
+  failed_when: false
+  changed_when: false
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+- name: Warning about existing components
+  ansible.builtin.debug:
+    msg: "{{ item.item }} already installed: {{ item.stdout_lines[0] if item.rc == 0 else 'not found' }}"
+  loop: "{{ k8s_check.results }}"
+  when: item.rc == 0
+
+- name: Final check summary
+  ansible.builtin.debug:
+    msg: "All system checks passed successfully. Installation can proceed."

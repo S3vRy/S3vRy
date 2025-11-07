@@ -1,0 +1,47 @@
+---
+# Ansible Lint Configuration
+# Best practices for 2025
+
+# Skip specific rules
+skip_list:
+  - yaml[line-length]  # Allow longer lines for readability
+  - name[casing]  # Allow specific naming conventions
+  - fqcn[action-core]  # Allow shorthand actions for compatibility
+
+# Enable additional rules
+enable_list:
+  - no-changed-when
+  - no-jinja-when
+  - no-risky-file-operations
+  - no-risky-shell-pipe
+  - no-relative-paths
+  - no-unsafe-readonly
+  - no-risky-sudo
+  - fqcn-builtins
+
+# Exclude paths
+exclude_paths:
+  - .cache/
+  - .git/
+  - .venv/
+  - venv/
+  - roles/*/molecule/
+  - roles/*/.cache/
+
+# Parse options
+parseable: true
+quiet: false
+verbosity: 1
+
+# Tags
+tags:
+  - production
+  - safety
+
+# Project structure
+project_dir: .
+
+# Custom rules
+warn_list:
+  - experimental[*]
+

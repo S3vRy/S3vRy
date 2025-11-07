@@ -1,0 +1,29 @@
+---
+# Gateway API CRDs installation
+
+- name: Download Gateway API CRDs
+  ansible.builtin.get_url:
+    url: "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_version }}/standard-install.yaml"
+    dest: /tmp/gateway-api-crds.yaml
+    mode: "0644"
+
+- name: Install Gateway API CRDs
+  kubernetes.core.k8s:
+    state: present
+    src: /tmp/gateway-api-crds.yaml
+
+- name: Wait for CRDs readiness
+  ansible.builtin.pause:
+    seconds: 5
+
+- name: Check installed CRDs
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    label_selectors:
+      - "gateway.networking.k8s.io in labels"
+  register: gateway_crds
+
+- name: Display installed CRDs
+  ansible.builtin.debug:
+    msg: "Installed CRDs: {{ gateway_crds.resources | map(attribute='metadata.name') | list }}"

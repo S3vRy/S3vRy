@@ -1,0 +1,267 @@
+---
+# Node preparation for Kubernetes
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: System upgrade
+  ansible.builtin.apt:
+    upgrade: dist
+    update_cache: false
+    autoremove: true
+    autoclean: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Install dependencies
+  ansible.builtin.apt:
+    name:
+      - curl
+      - wget
+      - gpg
+      - apt-transport-https
+      - ca-certificates
+      - gnupg
+      - lsb-release
+    state: present
+
+- name: Create directory for containerd
+  ansible.builtin.file:
+    path: /usr/local/bin
+    state: directory
+    mode: "0755"
+
+- name: Download containerd
+  ansible.builtin.get_url:
+    url: "https://github.com/containerd/containerd/releases/download/v{{ containerd_version }}/containerd-{{ containerd_version }}-linux-amd64.tar.gz"
+    dest: /tmp/containerd-{{ containerd_version }}-linux-amd64.tar.gz
+    mode: "0644"
+
+- name: Extract containerd
+  ansible.builtin.unarchive:
+    src: /tmp/containerd-{{ containerd_version }}-linux-amd64.tar.gz
+    dest: /usr/local
+    remote_src: true
+    creates: /usr/local/bin/containerd
+
+- name: Remove containerd archive
+  ansible.builtin.file:
+    path: /tmp/containerd-{{ containerd_version }}-linux-amd64.tar.gz
+    state: absent
+
+- name: Download systemd service for containerd
+  ansible.builtin.get_url:
+    url: https://raw.githubusercontent.com/containerd/containerd/main/containerd.service
+    dest: /etc/systemd/system/containerd.service
+    mode: "0644"
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable and start containerd
+  ansible.builtin.systemd:
+    name: containerd
+    enabled: true
+    state: started
+
+- name: Create containerd configuration directory
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: Generate containerd configuration
+  ansible.builtin.command:
+    cmd: containerd config default
+  register: containerd_config
+  changed_when: false
+  failed_when: false
+
+- name: Save containerd configuration
+  ansible.builtin.copy:
+    content: "{{ containerd_config.stdout | regex_replace('SystemdCgroup = false', 'SystemdCgroup = true') }}"
+    dest: /etc/containerd/config.toml
+    mode: "0644"
+
+- name: Restart containerd
+  ansible.builtin.systemd:
+    name: containerd
+    state: restarted
+
+- name: Load kernel modules
+  ansible.builtin.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+
+- name: Create configuration for module auto-loading
+  ansible.builtin.copy:
+    content: |
+      overlay
+      br_netfilter
+    dest: /etc/modules-load.d/k8s.conf
+    mode: "0644"
+
+- name: Configure sysctl parameters
+  ansible.builtin.copy:
+    content: |
+      net.bridge.bridge-nf-call-iptables=1
+      net.bridge.bridge-nf-call-ip6tables=1
+      net.ipv4.ip_forward=1
+    dest: /etc/sysctl.d/99-k8s.conf
+    mode: "0644"
+
+- name: Apply sysctl parameters
+  ansible.builtin.command:
+    cmd: sysctl --system
+  changed_when: false
+  # Note: sysctl --system applies all parameters from /etc/sysctl.d/
+  # This is idempotent as parameters are already written to the file above
+
+- name: Check swap status
+  ansible.builtin.stat:
+    path: /proc/swaps
+  register: swap_info
+
+- name: Disable swap (if enabled)
+  ansible.builtin.command:
+    cmd: swapoff -a
+  when: swap_info.stat.exists and swap_info.stat.size > 0
+  changed_when: swap_info.stat.size > 0
+
+- name: Comment out swap in fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*swap.*)$'
+    replace: '# \1'
+    backup: true
+
+- name: Create directory for GPG keys
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Add Kubernetes GPG key
+  ansible.builtin.get_url:
+    url: https://pkgs.k8s.io/core:/stable:/v1.34/deb/Release.key
+    dest: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    mode: "0644"
+
+- name: Add Kubernetes repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg arch={{ ansible_architecture }}] https://pkgs.k8s.io/core:/stable:/v1.34/deb/ /"
+    state: present
+    filename: kubernetes
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+
+- name: Check Kubernetes version availability
+  ansible.builtin.command:
+    cmd: apt-cache madison kubelet | grep -q "{{ kubernetes_version }}" || echo "not_found"
+  register: k8s_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Install Kubernetes components (exact version)
+  ansible.builtin.apt:
+    name:
+      - "kubelet={{ kubernetes_version }}-*"
+      - "kubeadm={{ kubernetes_version }}-*"
+      - "kubectl={{ kubernetes_version }}-*"
+    state: present
+    update_cache: false
+  when: k8s_version_check.stdout != "not_found"
+
+- name: Install Kubernetes components (latest version)
+  ansible.builtin.apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+    update_cache: false
+  when: k8s_version_check.stdout == "not_found"
+
+- name: Hold Kubernetes component versions
+  ansible.builtin.command:
+    cmd: apt-mark hold kubelet kubeadm kubectl
+  changed_when: false
+
+- name: Enable kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    state: stopped
+
+- name: Create directory for CNI plugins
+  ansible.builtin.file:
+    path: /opt/cni/bin
+    state: directory
+    mode: "0755"
+
+- name: Download CNI plugins
+  ansible.builtin.get_url:
+    url: "https://github.com/containernetworking/plugins/releases/download/{{ cni_plugins_version }}/cni-plugins-linux-amd64-{{ cni_plugins_version }}.tgz"
+    dest: /tmp/cni-plugins-{{ cni_plugins_version }}.tgz
+    mode: "0644"
+
+- name: Extract CNI plugins
+  ansible.builtin.unarchive:
+    src: /tmp/cni-plugins-{{ cni_plugins_version }}.tgz
+    dest: /opt/cni/bin
+    remote_src: true
+
+- name: Remove CNI plugins archive
+  ansible.builtin.file:
+    path: /tmp/cni-plugins-{{ cni_plugins_version }}.tgz
+    state: absent
+
+- name: Download runc
+  ansible.builtin.get_url:
+    url: "https://github.com/opencontainers/runc/releases/download/{{ runc_version }}/runc.amd64"
+    dest: /usr/local/sbin/runc
+    mode: "0755"
+
+- name: Check containerd version
+  ansible.builtin.command:
+    cmd: containerd --version
+  register: containerd_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Check kubelet version
+  ansible.builtin.command:
+    cmd: kubelet --version
+  register: kubelet_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Check kubeadm version
+  ansible.builtin.command:
+    cmd: kubeadm version -o short
+  register: kubeadm_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Check kubectl version
+  ansible.builtin.command:
+    cmd: kubectl version --client --short
+  register: kubectl_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Display component versions
+  ansible.builtin.debug:
+    msg:
+      - "containerd: {{ containerd_version_check.stdout_lines[0] if containerd_version_check.rc == 0 else 'not found' }}"
+      - "kubelet: {{ kubelet_version_check.stdout_lines[0] if kubelet_version_check.rc == 0 else 'not found' }}"
+      - "kubeadm: {{ kubeadm_version_check.stdout_lines[0] if kubeadm_version_check.rc == 0 else 'not found' }}"
+      - "kubectl: {{ kubectl_version_check.stdout_lines[0] if kubectl_version_check.rc == 0 else 'not found' }}"

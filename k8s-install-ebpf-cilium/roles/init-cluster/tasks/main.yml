@@ -1,0 +1,352 @@
+---
+# First cluster node initialization
+
+- name: Create kubeadm configuration
+  ansible.builtin.template:
+    src: kubeadm-config.yaml.j2
+    dest: "{{ kubeadm_config_path }}"
+    mode: "0644"
+
+- name: Check cluster existence
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: admin_conf_exists
+
+- name: Initialize cluster
+  ansible.builtin.command:
+    cmd: kubeadm init --config {{ kubeadm_config_path }} --upload-certs --skip-phases=addon/kube-proxy
+  register: kubeadm_init
+  when: not admin_conf_exists.stat.exists
+  changed_when: kubeadm_init.rc == 0
+  args:
+    creates: /etc/kubernetes/admin.conf
+
+# Join parameters are extracted from stdout and passed through Ansible facts (cacheable)
+
+- name: Create .kube directory
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.kube"
+    state: directory
+    mode: "0755"
+
+- name: Copy kubeconfig
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "{{ kubeconfig_path }}"
+    remote_src: true
+    owner: "{{ ansible_user_id }}"
+    group: "{{ ansible_user_id }}"
+    mode: "0600"
+
+- name: Wait for API server readiness
+  ansible.builtin.wait_for:
+    host: "{{ k8s_master_1_ip }}"
+    port: "{{ k8s_api_port }}"
+    delay: 10
+    timeout: 300
+    state: started
+
+- name: Install python3-kubernetes for Kubernetes API interaction
+  ansible.builtin.apt:
+    name: python3-kubernetes
+    state: present
+    update_cache: false
+
+- name: Check cluster connection
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: nodes_check
+  until: nodes_check.resources | length > 0
+  retries: 30
+  delay: 2
+  ignore_errors: true
+
+- name: Upload kubeadm configuration to cluster
+  ansible.builtin.command:
+    cmd: kubeadm init phase upload-config kubeadm --config {{ kubeadm_config_path }}
+  changed_when: false
+
+# CoreDNS will be installed after all nodes are connected and CNI is installed
+
+- name: Get CA certificate
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/pki/ca.crt
+  register: ca_cert
+
+- name: Read admin.conf content for ConfigMap
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/admin.conf
+  register: admin_conf_content
+  changed_when: false
+
+- name: Create or update cluster-info ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: cluster-info
+        namespace: kube-public
+      data:
+        kubeconfig: "{{ admin_conf_content.content | b64decode }}"
+  # Note: kubernetes.core.k8s automatically detects changes through API
+
+- name: Create ClusterRole system:cluster-info-reader
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: system:cluster-info-reader
+      rules:
+        - apiGroups:
+            - ""
+          resources:
+            - configmaps
+          resourceNames:
+            - cluster-info
+          verbs:
+            - get
+  ignore_errors: true
+
+- name: Create RoleBinding for cluster-info
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: system:cluster-info-reader
+        namespace: kube-public
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: system:cluster-info-reader
+      subjects:
+        - kind: Group
+          name: system:unauthenticated
+        - kind: Group
+          name: system:authenticated
+  ignore_errors: true
+
+- name: Create ClusterRoleBinding for cluster-info
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: system:cluster-info-reader
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: system:cluster-info-reader
+      subjects:
+        - kind: Group
+          name: system:unauthenticated
+        - kind: Group
+          name: system:authenticated
+  ignore_errors: true
+
+- name: Create ClusterRole system:kubeadm-config-reader
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: system:kubeadm-config-reader
+      rules:
+        - apiGroups:
+            - ""
+          resources:
+            - configmaps
+          resourceNames:
+            - kubeadm-config
+          verbs:
+            - get
+  ignore_errors: true
+
+- name: Create ClusterRoleBinding for kubeadm-config
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: system:kubeadm-config-reader
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: system:kubeadm-config-reader
+      subjects:
+        - kind: Group
+          name: system:authenticated
+  ignore_errors: true
+
+- name: Create ClusterRole system:node-bootstrapper
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: system:node-bootstrapper
+      rules:
+        - apiGroups:
+            - ""
+          resources:
+            - nodes
+            - nodes/status
+          verbs:
+            - create
+            - patch
+        - apiGroups:
+            - coordination.k8s.io
+          resources:
+            - leases
+          verbs:
+            - create
+            - patch
+        - apiGroups:
+            - ""
+          resources:
+            - configmaps
+          resourceNames:
+            - kubelet-config
+            - kube-proxy
+          verbs:
+            - get
+  ignore_errors: true
+
+- name: Create RoleBinding for node-bootstrapper in kube-system
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: system:node-bootstrapper
+        namespace: kube-system
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: system:node-bootstrapper
+      subjects:
+        - kind: Group
+          name: system:bootstrappers:kubeadm:default-node-token
+  ignore_errors: true
+
+- name: Create ClusterRoleBinding for node-bootstrapper
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: system:node-bootstrapper
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: system:node-bootstrapper
+      subjects:
+        - kind: Group
+          name: system:bootstrappers:kubeadm:default-node-token
+  ignore_errors: true
+
+- name: Get join token from cluster (if cluster is already initialized)
+  ansible.builtin.command:
+    cmd: kubeadm token list -o jsonpath='{.items[0].token}' 2>/dev/null || echo ""
+  register: existing_token
+  changed_when: false
+  failed_when: false
+  when: >
+    admin_conf_exists.stat.exists | default(false)
+    or (kubeadm_init is not defined)
+    or (kubeadm_init is defined and not (kubeadm_init.changed | default(false)))
+
+- name: Create new join token (if token not found)
+  ansible.builtin.command:
+    cmd: kubeadm token create
+  register: new_token
+  changed_when: new_token.rc == 0
+  failed_when: false
+  when: >
+    (admin_conf_exists.stat.exists | default(false) or (kubeadm_init is not defined) or (kubeadm_init is defined and not (kubeadm_init.changed | default(false))))
+    and (existing_token.stdout is not defined or existing_token.stdout == '' or existing_token.stdout | trim == '')
+
+- name: Get certificate key from cluster (if cluster is already initialized)
+  ansible.builtin.shell:
+    cmd: |
+      # Try to get key via upload-certs (reloads certificates and issues new key)
+      KEY=$(kubeadm init phase upload-certs --upload-certs 2>&1 | grep -oP '--certificate-key\s+\K[a-f0-9]{64}' || echo "")
+      echo "$KEY"
+  register: existing_cert_key
+  changed_when: false
+  failed_when: false
+  when: >
+    admin_conf_exists.stat.exists | default(false)
+    or (kubeadm_init is not defined)
+    or (kubeadm_init is defined and not (kubeadm_init.changed | default(false)))
+
+- name: Get CA cert hash
+  ansible.builtin.shell:
+    cmd: openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl pkey -pubin -outform der | openssl dgst -sha256 -hex | sed 's/^.* //'
+  register: ca_cert_hash_calc
+  changed_when: false
+  failed_when: false
+  when: >
+    admin_conf_exists.stat.exists | default(false)
+    or (kubeadm_init is not defined)
+    or (kubeadm_init is defined and not (kubeadm_init.changed | default(false)))
+
+- name: Extract node join parameters from kubeadm init output
+  ansible.builtin.set_fact:
+    join_token: "{{ (kubeadm_init.stdout | regex_search('--token\\s+([a-z0-9]+\\.[a-z0-9]+)', '\\1') or []) | first | default('') }}"
+    join_ca_cert_hash: "{{ (kubeadm_init.stdout | regex_search('sha256:([a-f0-9]{64})', '\\1') or []) | first | default('') }}"
+    join_certificate_key: "{{ (kubeadm_init.stdout | regex_search('--certificate-key\\s+([a-f0-9]{64})', '\\1') or []) | first | default('') }}"
+  when: >
+    kubeadm_init is defined
+    and kubeadm_init.stdout is defined
+    and (kubeadm_init.stdout | length) > 0
+    and kubeadm_init.changed | default(false)
+
+- name: Use parameters from existing cluster
+  ansible.builtin.set_fact:
+    join_token: "{{ (new_token.stdout | default('') | trim) if (new_token.stdout is defined and new_token.stdout != '' and new_token.stdout | trim != '') else (existing_token.stdout | default('') | trim) }}"
+    join_ca_cert_hash: "{{ ca_cert_hash_calc.stdout | default('') | trim }}"
+    join_certificate_key: "{{ existing_cert_key.stdout | default('') | trim }}"
+  when: >
+    admin_conf_exists.stat.exists | default(false)
+    or (kubeadm_init is not defined)
+    or (kubeadm_init is defined and not (kubeadm_init.changed | default(false)))
+
+- name: Initialize join parameter variables (if not defined)
+  ansible.builtin.set_fact:
+    join_token: "{{ join_token | default('') }}"
+    join_ca_cert_hash: "{{ join_ca_cert_hash | default('') }}"
+    join_certificate_key: "{{ join_certificate_key | default('') }}"
+
+- name: Determine CA cert hash for saving
+  ansible.builtin.set_fact:
+    final_ca_cert_hash: "{{ ('sha256:' + join_ca_cert_hash) if (join_ca_cert_hash and join_ca_cert_hash | trim != '') else ('sha256:' + ((kubeadm_init.stdout | regex_search('sha256:([a-f0-9]{64})', '\\1') or []) | first | default(''))) if (kubeadm_init is defined and kubeadm_init.stdout is defined and kubeadm_init.changed | default(false)) else ('sha256:' + (ca_cert_hash_calc.stdout | default('') | trim)) if (ca_cert_hash_calc.stdout is defined and ca_cert_hash_calc.stdout | trim != '') else '' }}"
+
+- name: Save join parameters to facts (for use by other nodes)
+  ansible.builtin.set_fact:
+    join_params:
+      token: "{{ join_token | trim }}"
+      ca_cert_hash: "{{ final_ca_cert_hash }}"
+      certificate_key: "{{ join_certificate_key | trim }}"
+    cacheable: true
+
+- name: Display join information for nodes
+  ansible.builtin.debug:
+    msg: |
+      Node join parameters saved to Ansible facts (cacheable):
+      TOKEN: {{ join_params.token }}
+      CA_CERT_HASH: {{ join_params.ca_cert_hash }}
+      CERTIFICATE_KEY: {{ join_params.certificate_key }}
+      These parameters are available via hostvars['k8s-master-1']['join_params'] for other playbooks

@@ -1,0 +1,13 @@
+---
+# Playbook for Gateway API installation
+
+- name: Gateway API CRDs installation
+  hosts: k8s-master-1
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - install-gateway-api
+

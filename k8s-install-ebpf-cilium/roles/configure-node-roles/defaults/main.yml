@@ -1,0 +1,8 @@
+---
+# Defaults for configure-node-roles role
+# ALL values must be defined in group_vars/all.yml
+# This file is kept for variable structure documentation
+
+# Variables used by this role:
+# - node_roles (list of node roles)
+# - node_taint_prefer_no_schedule (boolean value)

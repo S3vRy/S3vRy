@@ -1,0 +1,13 @@
+---
+# Playbook for first cluster node initialization
+
+- name: Kubernetes cluster initialization
+  hosts: k8s-master-1
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - init-cluster
+

@@ -1,0 +1,127 @@
+---
+# CoreDNS installation after all nodes are connected and CNI is installed
+
+- name: Install python3-kubernetes for Kubernetes API interaction
+  ansible.builtin.apt:
+    name: python3-kubernetes
+    state: present
+    update_cache: false
+
+- name: Check CoreDNS presence
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: coredns
+    namespace: kube-system
+  register: coredns_check
+  failed_when: false
+  changed_when: false
+
+- name: Install CoreDNS (if not already installed)
+  ansible.builtin.command:
+    cmd: kubeadm init phase addon coredns --config {{ kubeadm_config_path }}
+  when: coredns_check.resources | length == 0
+  changed_when: true
+  ignore_errors: true
+
+- name: Get number of nodes in cluster
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: nodes_info
+  changed_when: false
+
+- name: Determine CoreDNS replica count (based on number of nodes)
+  ansible.builtin.set_fact:
+    coredns_replicas: "{{ [nodes_info.resources | length, 3] | max }}"
+
+- name: Configure CoreDNS for all nodes (scaling)
+  kubernetes.core.k8s_scale:
+    api_version: apps/v1
+    kind: Deployment
+    name: coredns
+    namespace: kube-system
+    replicas: "{{ coredns_replicas }}"
+  register: coredns_scale
+
+- name: Get current CoreDNS deployment configuration
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: coredns
+    namespace: kube-system
+  register: coredns_deployment
+  changed_when: false
+
+- name: Configure podAntiAffinity for CoreDNS (guarantee one replica per node)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: coredns
+        namespace: kube-system
+      spec:
+        template:
+          spec:
+            affinity:
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  - labelSelector:
+                      matchExpressions:
+                        - key: k8s-app
+                          operator: In
+                          values:
+                            - kube-dns
+                    topologyKey: kubernetes.io/hostname
+    merge_type: strategic-merge
+  # Note: kubernetes.core.k8s automatically detects changes through API
+  # strategic-merge allows updating only specified fields while preserving others
+
+- name: Wait for all CoreDNS pods readiness
+  ansible.builtin.shell:
+    cmd: |
+      READY=$(kubectl get pods -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.phase}{"\n"}{end}' | grep -c "Running" || echo "0")
+      TOTAL={{ coredns_replicas }}
+      READY_COUNT=$(kubectl get pods -n kube-system -l k8s-app=kube-dns --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l || echo "0")
+      if [ "$READY_COUNT" -eq "$TOTAL" ]; then
+        # Additional container readiness check
+        READY_CONTAINERS=$(kubectl get pods -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' | grep -c "true" || echo "0")
+        if [ "$READY_CONTAINERS" -eq "$TOTAL" ]; then
+          exit 0
+        else
+          exit 1
+        fi
+      else
+        exit 1
+      fi
+  register: coredns_ready_check
+  until: coredns_ready_check.rc == 0
+  retries: 60
+  delay: 5
+  changed_when: false
+
+- name: Get CoreDNS distribution across nodes
+  ansible.builtin.shell:
+    cmd: kubectl get pods -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.spec.nodeName}{"\n"}{end}'
+  register: coredns_distribution
+  changed_when: false
+  failed_when: false
+
+- name: Get number of ready CoreDNS pods
+  ansible.builtin.shell:
+    cmd: kubectl get pods -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' | grep -c "true" || echo "0"
+  register: coredns_ready_count
+  changed_when: false
+
+- name: Display CoreDNS information
+  ansible.builtin.debug:
+    msg: |
+      CoreDNS installed and configured:
+      - Replica count: {{ coredns_replicas }}
+      - Node count: {{ nodes_info.resources | length }}
+      - Pod status: {{ coredns_ready_count.stdout | trim }}/{{ coredns_replicas }} Ready
+      - Distribution across nodes:
+        {{ coredns_distribution.stdout_lines | default(['Failed to get distribution']) | join('\n        ') }}
+      - podAntiAffinity configured to guarantee one replica per node

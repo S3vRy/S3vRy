@@ -1,0 +1,33 @@
+---
+# Main playbook for full automated Kubernetes cluster installation
+# Run: ansible-playbook playbooks/site.yml
+
+- name: System check
+  import_playbook: 00-check-system.yml
+
+- name: Node preparation
+  import_playbook: 01-prepare-nodes.yml
+
+- name: Cluster initialization (first master)
+  import_playbook: 02-init-cluster.yml
+
+- name: Join remaining master nodes
+  import_playbook: 03-join-masters.yml
+
+- name: Node roles configuration (right after joining, before CNI installation)
+  import_playbook: 08-configure-node-roles.yml
+
+- name: Gateway API installation
+  import_playbook: 04-install-gateway-api.yml
+
+- name: Cilium (CNI) installation
+  import_playbook: 05-install-cilium.yml
+
+- name: CoreDNS installation (after CNI and all nodes)
+  import_playbook: 09-install-coredns.yml
+
+- name: Cilium LoadBalancer configuration
+  import_playbook: 06-configure-cilium-lb.yml
+
+- name: Gateway configuration
+  import_playbook: 07-configure-gateway.yml

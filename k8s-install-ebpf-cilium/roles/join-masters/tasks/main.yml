@@ -1,0 +1,60 @@
+---
+# Join master nodes to cluster
+
+- name: Get join parameters from master-1 Ansible facts
+  ansible.builtin.set_fact:
+    join_params: "{{ hostvars['k8s-master-1']['join_params'] }}"
+  when: 
+    - hostvars['k8s-master-1'] is defined
+    - hostvars['k8s-master-1']['join_params'] is defined
+
+- name: Verify all parameters are present
+  ansible.builtin.assert:
+    that:
+      - join_params.token is defined
+      - join_params.token | trim != ''
+      - join_params.ca_cert_hash is defined
+      - join_params.ca_cert_hash | trim != ''
+      - join_params.certificate_key is defined
+      - join_params.certificate_key | trim != ''
+    fail_msg: "Failed to get join parameters. TOKEN={{ join_params.token | default('EMPTY') }}, CA_HASH={{ join_params.ca_cert_hash | default('EMPTY') }}, CERT_KEY={{ join_params.certificate_key | default('EMPTY') }}. Ensure cluster is initialized on k8s-master-1."
+
+- name: Remove existing bootstrap-kubelet.conf (if present)
+  ansible.builtin.file:
+    path: /etc/kubernetes/bootstrap-kubelet.conf
+    state: absent
+
+- name: Join node to cluster
+  ansible.builtin.command:
+    cmd: >
+      kubeadm join {{ control_plane_endpoint }}
+      --token {{ join_params.token }}
+      --discovery-token-ca-cert-hash {{ join_params.ca_cert_hash }}
+      --control-plane
+      --certificate-key {{ join_params.certificate_key }}
+      --cri-socket unix:///run/containerd/containerd.sock
+  register: join_result
+  args:
+    creates: /etc/kubernetes/admin.conf
+
+- name: Check admin.conf presence
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: admin_conf
+
+- name: Create .kube directory
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.kube"
+    state: directory
+    mode: "0755"
+  when: admin_conf.stat.exists
+
+- name: Copy kubeconfig
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "{{ kubeconfig_path }}"
+    remote_src: true
+    owner: "{{ ansible_user_id }}"
+    group: "{{ ansible_user_id }}"
+    mode: "0600"
+  when: admin_conf.stat.exists

@@ -1,0 +1,13 @@
+---
+# Playbook for node preparation
+
+- name: Node preparation for Kubernetes
+  hosts: k8s_masters
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - prepare-nodes
+

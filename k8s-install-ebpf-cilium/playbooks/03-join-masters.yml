@@ -1,0 +1,13 @@
+---
+# Playbook for joining remaining master nodes
+
+- name: Join master nodes to cluster
+  hosts: k8s_masters:!k8s-master-1
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - join-masters
+

@@ -1,0 +1,13 @@
+---
+# Playbook for system checks on all nodes
+
+- name: System check before installation
+  hosts: k8s_masters
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - check-system
+

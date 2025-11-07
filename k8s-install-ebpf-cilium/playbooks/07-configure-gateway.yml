@@ -1,0 +1,13 @@
+---
+# Playbook for Gateway API configuration
+
+- name: Gateway API configuration
+  hosts: k8s-master-1
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - configure-gateway
+

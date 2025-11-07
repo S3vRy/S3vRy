@@ -1,0 +1,68 @@
+---
+# Gateway API configuration
+
+- name: Create GatewayClass
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: GatewayClass
+      metadata:
+        name: "{{ gateway_class_name }}"
+      spec:
+        controllerName: io.cilium/gateway-controller
+        description: "Cilium Gateway API controller"
+
+- name: Create namespace for Gateway
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ gateway_namespace }}"
+
+- name: Create Gateway
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: Gateway
+      metadata:
+        name: "{{ gateway_name }}"
+        namespace: "{{ gateway_namespace }}"
+      spec:
+        gatewayClassName: "{{ gateway_class_name }}"
+        listeners:
+          - name: http
+            protocol: HTTP
+            port: 80
+            allowedRoutes:
+              namespaces:
+                from: All
+          - name: https
+            protocol: HTTPS
+            port: 443
+            allowedRoutes:
+              namespaces:
+                from: All
+            tls:
+              mode: Terminate
+              certificateRefs:
+                - name: tls-secret
+                  namespace: "{{ gateway_namespace }}"
+
+- name: Wait for Gateway readiness
+  ansible.builtin.pause:
+    seconds: 10
+
+- name: Check Gateway
+  kubernetes.core.k8s_info:
+    api_version: gateway.networking.k8s.io/v1
+    kind: Gateway
+    namespace: "{{ gateway_namespace }}"
+  register: gateway_info
+
+- name: Display Gateway information
+  ansible.builtin.debug:
+    msg: "Gateway created: {{ gateway_info.resources | map(attribute='metadata.name') | list }}"

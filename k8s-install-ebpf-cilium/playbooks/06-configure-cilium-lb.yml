@@ -1,0 +1,13 @@
+---
+# Playbook for Cilium LoadBalancer configuration
+
+- name: Cilium LoadBalancer configuration
+  hosts: k8s-master-1
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - configure-cilium-lb
+

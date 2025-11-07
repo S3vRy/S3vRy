@@ -1,0 +1,60 @@
+---
+# Node roles and taints configuration
+
+- name: Get node information
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: nodes_info
+
+- name: Add node labels for each role
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Node
+      metadata:
+        name: "{{ node_item.metadata.name }}"
+        labels: "{{ node_item.metadata.labels | default({}) | combine({('node-role.kubernetes.io/' + role_item): ''}) }}"
+  with_nested:
+    - "{{ nodes_info.resources }}"
+    - "{{ node_roles }}"
+  vars:
+    node_item: "{{ item[0] }}"
+    role_item: "{{ item[1] }}"
+
+- name: Configure node taints (remove old control-plane taints)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Node
+      metadata:
+        name: "{{ item.metadata.name }}"
+      spec:
+        taints: "{{ (item.spec.taints | default([]) | rejectattr('key', 'equalto', 'node-role.kubernetes.io/control-plane') | list) + ([{'key': 'node-role.kubernetes.io/control-plane', 'effect': 'PreferNoSchedule'}] if node_taint_prefer_no_schedule | bool else []) }}"
+  loop: "{{ nodes_info.resources }}"
+  when: node_taint_prefer_no_schedule | bool
+  # Note: kubernetes.core.k8s automatically detects changes through API
+  # Remove all old control-plane taints and add PreferNoSchedule if needed
+
+- name: Get taint information after configuration
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+    name: "{{ item.metadata.name }}"
+  register: taints_check
+  loop: "{{ nodes_info.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  changed_when: false
+
+- name: Display taint information
+  ansible.builtin.debug:
+    msg: "{{ item.item.metadata.name }}: taints={{ item.resources[0].spec.taints | default([]) | map(attribute='effect') | list | join(', ') or 'none' }}"
+  loop: "{{ taints_check.results }}"
+
+- name: Display node labels
+  ansible.builtin.debug:
+    msg: "{{ item.metadata.name }}: {{ item.metadata.labels }}"
+  loop: "{{ nodes_info.resources }}"

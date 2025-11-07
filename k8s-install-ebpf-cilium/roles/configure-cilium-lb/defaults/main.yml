@@ -1,0 +1,8 @@
+---
+# Defaults for configure-cilium-lb role
+# ALL values must be defined in group_vars/all.yml
+# This file is kept for variable structure documentation
+
+# Variables used by this role:
+# - cilium_lb_ippool (list of CIDR blocks)
+# - cilium_l2_policy_interfaces (list of interfaces)
